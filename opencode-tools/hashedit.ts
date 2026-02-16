@@ -42,8 +42,9 @@ export default tool({
       : `${context.directory}/${args.filePath}`;
     
     const editsJson = JSON.stringify(args.edits);
+    const editsResponse = new Response(editsJson);
     
-    const result = await $`hashline-tools edit ${filepath} --edits ${editsJson}`;
+    const result = await $`hashline-tools edit ${filepath} --edits-stdin < ${editsResponse}`;
     const output = result.text();
     
     // Extract just the diff part for cleaner display

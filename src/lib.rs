@@ -430,5 +430,5 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     Read { file_path: String, #[arg(long)] offset: Option<usize>, #[arg(long)] limit: Option<usize> },
-    Edit { file_path: String, #[arg(long)] edits: String },
+    Edit { file_path: String, #[arg(long)] edits: Option<String>, #[arg(long)] edits_stdin: bool },
 }

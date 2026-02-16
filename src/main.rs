@@ -8,8 +8,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let result = cmd_read(&file_path, offset, limit)?;
             println!("{}", result);
         }
-        Commands::Edit { file_path, edits } => {
-            let result = cmd_edit(&file_path, &edits)?;
+        Commands::Edit { file_path, edits, edits_stdin } => {
+            let edits_json = if edits_stdin {
+                use std::io::{self, Read};
+                let mut buffer = String::new();
+                io::stdin().read_to_string(&mut buffer)?;
+                buffer
+            } else {
+                edits.ok_or("--edits or --edits-stdin required")?
+            };
+            let result = cmd_edit(&file_path, &edits_json)?;
             println!("{}", result);
         }
     }
