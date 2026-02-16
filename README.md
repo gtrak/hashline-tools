@@ -6,7 +6,8 @@ I am starting to regret that decision, but will see how far it goes.
 I absolutely loved this blog post https://blog.can.ac/2026/02/12/the-harness-problem/ because I see failed edits constantly with Local LLMs, and this is a novel approach.  
 Is it very novel though? BASIC had lines that start with indexes, too.  I want to use it, anyway. GOTO 200.
 
-200 I am attempting to create a CLI version of this edit tool for later opencode integration, but it might stand alone. This was initially ported from opencode with LLM help.
+200 I am attempting to create a CLI version of this edit tool for later opencode integration, but it might stand alone. This was initially ported from oh-my-pi with LLM help 
+into an opencode tool, then later extracted as a Rust CLI.
 
 ## Usage in OpenCode
 Run `cargo install --path .` or create a wrapper script called 'hashline-tools' over cargo run.
