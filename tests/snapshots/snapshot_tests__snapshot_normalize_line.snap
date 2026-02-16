@@ -1,0 +1,10 @@
+---
+source: tests/snapshot_tests.rs
+expression: "format!(\"{:#?}\", results)"
+---
+[
+    "hello",
+    "helloworld",
+    "hello",
+    "helloworld",
+]

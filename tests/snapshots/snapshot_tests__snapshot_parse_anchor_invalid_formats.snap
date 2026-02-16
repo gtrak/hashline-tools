@@ -1,0 +1,31 @@
+---
+source: tests/snapshot_tests.rs
+expression: "format!(\"{:#?}\", results)"
+---
+[
+    (
+        "Missing colon",
+        None,
+    ),
+    (
+        "Line 0 (invalid)",
+        None,
+    ),
+    (
+        "Non-numeric line",
+        None,
+    ),
+    (
+        "Empty hash",
+        Some(
+            (
+                1,
+                "",
+            ),
+        ),
+    ),
+    (
+        "No hash at all",
+        None,
+    ),
+]

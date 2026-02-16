@@ -1,0 +1,11 @@
+---
+source: tests/snapshot_tests.rs
+expression: result
+---
+<file>
+1:9h9o|line 1
+2:ecmm|line 2
+3:08rx|line 3
+
+(End of file - 3 total lines)
+</file>

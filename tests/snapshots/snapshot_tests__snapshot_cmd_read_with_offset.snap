@@ -1,0 +1,13 @@
+---
+source: tests/snapshot_tests.rs
+expression: result
+---
+<file>
+6:01ri|line 6
+7:2cet|line 7
+8:xabw|line 8
+9:04c3|line 9
+10:8ds7|line 10
+
+(File has more lines. Use 'offset' parameter to read beyond line 10)
+</file>

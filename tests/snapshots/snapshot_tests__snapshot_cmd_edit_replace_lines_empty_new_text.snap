@@ -1,0 +1,14 @@
+---
+source: tests/snapshot_tests.rs
+expression: normalize_edit_output(&result)
+---
+Edit applied successfully.
+
+<diff>
+--- <TEMP_FILE>
++++ <TEMP_FILE>
+-first
+-second
+-third
+
+</diff>

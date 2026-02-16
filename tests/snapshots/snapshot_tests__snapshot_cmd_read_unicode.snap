@@ -1,0 +1,11 @@
+---
+source: tests/snapshot_tests.rs
+expression: result
+---
+<file>
+1:5h0q|café
+2:ekfa|naïve
+3:ufa5|über
+
+(End of file - 3 total lines)
+</file>

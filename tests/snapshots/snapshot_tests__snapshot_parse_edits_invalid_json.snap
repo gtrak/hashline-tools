@@ -1,0 +1,5 @@
+---
+source: tests/snapshot_tests.rs
+expression: "format!(\"{:?}\", result)"
+---
+Err("Failed to parse edits: expected ident at line 1 column 2")
