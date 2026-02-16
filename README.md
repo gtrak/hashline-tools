@@ -7,3 +7,12 @@ I absolutely loved this blog post https://blog.can.ac/2026/02/12/the-harness-pro
 Is it very novel though? BASIC had lines that start with indexes, too.  I want to use it, anyway. GOTO 200.
 
 200 I am attempting to create a CLI version of this edit tool for later opencode integration, but it might stand alone. This was initially ported from opencode with LLM help.
+
+## Usage in OpenCode
+Run `cargo install --path .` or create a wrapper script called 'hashline-tools' over cargo run.
+
+Copy the typescript wrappers to ~/.config/opencode/tools or a specific project.
+
+## Known issues
+Diffs are not yet displaying properly in opencode. I'm not sure if opencode will allow it without deeper
+modification.
