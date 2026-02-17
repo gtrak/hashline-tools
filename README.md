@@ -12,7 +12,7 @@ into an opencode tool, then later extracted as a Rust CLI.
 ## Usage in OpenCode
 Run `cargo install --path .` or create a wrapper script called 'hashline-tools' over cargo run.
 
-Copy the typescript wrappers to ~/.config/opencode/tools or a specific project.
+Copy the typescript wrappers in [./opencode-tools](./opencode-tools) to ~/.config/opencode/tools or a specific project folder's .opencode.
 
 ## Known issues
 Diffs are not yet displaying properly in opencode. I'm not sure if opencode will allow it without deeper
