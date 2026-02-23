@@ -1,0 +1,6 @@
+---
+source: tests/snapshot_tests.rs
+expression: result
+---
+first
+third

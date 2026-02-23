@@ -2,4 +2,4 @@
 source: tests/snapshot_tests.rs
 expression: result
 ---
-delete  line
+modified

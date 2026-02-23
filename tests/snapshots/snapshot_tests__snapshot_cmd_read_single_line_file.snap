@@ -3,7 +3,7 @@ source: tests/snapshot_tests.rs
 expression: result
 ---
 <file>
-1:tj0e|only one line
+1#KP:only line
 
 (End of file - 1 total lines)
 </file>

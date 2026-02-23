@@ -1,5 +1,0 @@
----
-source: tests/snapshot_tests.rs
-expression: "format!(\"{:?}\", result)"
----
-Err("Could not find \"nonexistent\". Best match (similarity 18%): \"first\"")

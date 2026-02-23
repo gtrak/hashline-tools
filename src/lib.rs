@@ -1,376 +1,410 @@
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use std::cmp;
 use std::fs;
-use std::hash::Hasher;
-use twox_hash::XxHash64;
+use xxhash_rust::xxh32::xxh32;
 
-const HASH_MOD: u64 = 36 * 36 * 36 * 36;
-const RADIX: u64 = 36;
+// ═══════════════════════════════════════════════════════════════════════════
+// Constants
+// ═══════════════════════════════════════════════════════════════════════════
 
-const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD: f64 = 0.0;
-const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD: f64 = 0.3;
+const NIBBLE_STR: &str = "ZPMQVRWSNKTXJBYH";
+const HASH_SEED: u32 = 0;
 
-pub fn compute_line_hash(line: &str) -> String {
-    let normalized: String = normalize_whitespace(line);
-    let mut hasher = XxHash64::with_seed(0);
-    hasher.write(normalized.as_bytes());
-    let hash = hasher.finish() % HASH_MOD;
-    to_base36(hash)
+// ═══════════════════════════════════════════════════════════════════════════
+// Hash Computation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute a short 2-character hash of a single line using xxHash32.
+/// Uses whitespace-normalized line. For lines with no alphanumeric chars,
+/// mixes in the line number to reduce collisions.
+pub fn compute_line_hash(line_num: usize, line: &str) -> String {
+    // Remove trailing carriage return
+    let line = if line.ends_with('\r') {
+        &line[..line.len() - 1]
+    } else {
+        line
+    };
+    
+    // Normalize: remove all whitespace
+    let normalized: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    
+    // Check if line has significant characters (alphanumeric)
+    let has_significant = normalized.chars().any(|c| c.is_alphanumeric());
+    
+    // Use line number as seed if no significant characters
+    let seed = if has_significant {
+        HASH_SEED
+    } else {
+        line_num as u32
+    };
+    
+    // Compute xxHash32 and take lower 8 bits
+    let hash = xxh32(normalized.as_bytes(), seed) & 0xff;
+    
+    // Convert to 2-char hash using NIBBLE_STR
+    let high = (hash >> 4) as usize;
+    let low = (hash & 0x0f) as usize;
+    
+    format!(
+        "{}{}",
+        NIBBLE_STR.chars().nth(high).unwrap(),
+        NIBBLE_STR.chars().nth(low).unwrap()
+    )
 }
 
-pub fn normalize_whitespace(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace()).collect()
+/// Format a line tag: "LINE#HASH"
+pub fn format_line_tag(line_num: usize, line: &str) -> String {
+    format!("{}#{}", line_num, compute_line_hash(line_num, line))
 }
 
-pub fn normalize_line(s: &str) -> String {
-    let without_cr = s.strip_suffix('\r').unwrap_or(s);
-    normalize_whitespace(without_cr)
+// ═══════════════════════════════════════════════════════════════════════════
+// Anchor Parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Parse a line reference like "5#ab" into structured form.
+/// Also accepts "5:abc" (old format) for backward compatibility.
+pub fn parse_anchor(anchor: &str) -> Option<(usize, String)> {
+    // Try new format: "LINE#HASH" (e.g., "5#ab")
+    let parts: Vec<&str> = anchor.splitn(2, '#').collect();
+    if parts.len() == 2 {
+        let line_num = parts[0].parse::<usize>().ok()?;
+        let hash = parts[1].to_string();
+        return Some((line_num, hash));
+    }
+    
+    // Try old format: "LINE:HASH" (e.g., "5:abc1")
+    let parts: Vec<&str> = anchor.splitn(2, ':').collect();
+    if parts.len() == 2 {
+        let line_num = parts[0].parse::<usize>().ok()?;
+        let hash = parts[1].to_string();
+        return Some((line_num, hash));
+    }
+    
+    None
 }
 
-pub fn to_base36(mut n: u64) -> String {
-    let mut chars = Vec::new();
-    for _ in 0..4 {
-        let rem = (n % RADIX) as u8;
-        chars.push(if rem < 10 {
-            b'0' + rem
-        } else {
-            b'a' + rem - 10
-        });
-        n /= RADIX;
-    }
-    chars.reverse();
-    String::from_utf8(chars).unwrap()
+// ═══════════════════════════════════════════════════════════════════════════
+// Hashline Edit Types
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AnchorRef {
+    pub line: usize,
+    pub hash: String,
 }
 
-pub fn levenshtein(a: &str, b: &str) -> usize {
-    let a_len = a.chars().count();
-    let b_len = b.chars().count();
-    
-    if a_len == 0 || b_len == 0 {
-        return cmp::max(a_len, b_len);
-    }
-    
-    let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
-    
-    for i in 0..=a_len {
-        matrix[i][0] = i;
-    }
-    for j in 0..=b_len {
-        matrix[0][j] = j;
-    }
-    
-    for (i, a_char) in a.chars().enumerate() {
-        for (j, b_char) in b.chars().enumerate() {
-            let cost = if a_char == b_char { 0 } else { 1 };
-            matrix[i + 1][j + 1] = cmp::min(
-                cmp::min(matrix[i][j + 1] + 1, matrix[i + 1][j] + 1),
-                matrix[i][j] + cost,
-            );
-        }
-    }
-    
-    matrix[a_len][b_len]
-}
-
-pub fn similarity(a: &str, b: &str) -> f64 {
-    if a.is_empty() && b.is_empty() {
-        return 1.0;
-    }
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
-    }
-    
-    let max_len = cmp::max(a.len(), b.len()) as f64;
-    let distance = levenshtein(a, b) as f64;
-    1.0 - (distance / max_len)
-}
-
-pub fn find_fuzzy_match(content: &str, old_text: &str) -> Result<(usize, String), String> {
-    if let Some(pos) = content.find(old_text) {
-        return Ok((pos, old_text.to_string()));
-    }
-    
-    let normalized_old = normalize_whitespace(old_text);
-    let normalized_content = normalize_whitespace(content);
-    
-    if let Some(pos) = normalized_content.find(&normalized_old) {
-        let mut original_pos = 0;
-        let mut normalized_pos = 0;
-        for (i, c) in content.chars().enumerate() {
-            if normalized_pos == pos {
-                original_pos = i;
-                break;
-            }
-            if !c.is_whitespace() {
-                normalized_pos += 1;
-            }
-        }
-        let end_pos = (original_pos + old_text.len() * 2).min(content.len());
-        return Ok((original_pos, content[original_pos..end_pos].to_string()));
-    }
-    
-    let candidates: Vec<(usize, &str)> = content
-        .lines()
-        .enumerate()
-        .map(|(i, line)| (i + 1, line))
-        .collect();
-    
-    let mut best_matches: Vec<(usize, f64, &str)> = candidates
-        .into_iter()
-        .map(|(line_num, line)| {
-            let sim = similarity(line, old_text);
-            (line_num, sim, line)
-        })
-        .filter(|(_, sim, _)| *sim >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD)
-        .collect();
-    
-    best_matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    
-    if best_matches.is_empty() {
-        return Err(format!(
-            "Could not find \"{}\" in content. The text may have been modified.",
-            old_text.chars().take(50).collect::<String>()
-        ));
-    }
-    
-    let top_similarity = best_matches[0].1;
-    let similar_candidates: Vec<_> = best_matches
-        .iter()
-        .filter(|(_, sim, _)| *sim >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD)
-        .collect();
-    
-    if similar_candidates.len() > 1 {
-        let candidates_str = similar_candidates
-            .iter()
-            .take(3)
-            .map(|(line, sim, text)| format!("  Line {} (similarity {:.0}%): {}", line, sim * 100.0, text.chars().take(50).collect::<String>()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        
-        return Err(format!(
-            "Multiple matches found for \"{}\". Provide more context to identify the correct location:\n{}",
-            old_text.chars().take(50).collect::<String>(),
-            candidates_str
-        ));
-    }
-    
-    let (_line_num, sim, matched_line) = best_matches[0];
-    if sim >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD {
-        let pos = content.find(matched_line).unwrap_or(0);
-        return Ok((pos, matched_line.to_string()));
-    }
-    
-    Err(format!(
-        "Could not find \"{}\". Best match (similarity {:.0}%): \"{}\"",
-        old_text.chars().take(50).collect::<String>(),
-        top_similarity * 100.0,
-        best_matches[0].2.chars().take(50).collect::<String>()
-    ))
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "type")]
-pub enum Edit {
-    #[serde(rename = "set_line")]
-    SetLine { anchor: String, new_text: String },
-    #[serde(rename = "replace_lines")]
-    ReplaceLines {
-        start_anchor: String,
-        end_anchor: String,
-        new_text: String,
-    },
-    #[serde(rename = "insert_after")]
-    InsertAfter { anchor: String, text: String },
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(tag = "op")]
+pub enum HashlineEdit {
     #[serde(rename = "replace")]
     Replace {
-        old_text: String,
-        new_text: String,
-        all: Option<bool>,
+        pos: AnchorRef,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end: Option<AnchorRef>,
+        lines: Vec<String>,
+    },
+    #[serde(rename = "append")]
+    Append {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pos: Option<AnchorRef>,
+        lines: Vec<String>,
+    },
+    #[serde(rename = "prepend")]
+    Prepend {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pos: Option<AnchorRef>,
+        lines: Vec<String>,
     },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum EditInput {
-    Flat(Edit),
-    NestedSetLine { set_line: SetLineEdit },
-    NestedReplaceLines { replace_lines: ReplaceLinesEdit },
-    NestedInsertAfter { insert_after: InsertAfterEdit },
-    NestedReplace { replace: ReplaceEdit },
+/// A hash mismatch found during validation
+#[derive(Debug)]
+pub struct HashMismatch {
+    pub line: usize,
+    pub expected: String,
+    pub actual: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SetLineEdit { pub anchor: String, pub new_text: String }
-#[derive(Debug, Deserialize)]
-pub struct ReplaceLinesEdit { pub start_anchor: String, pub end_anchor: String, pub new_text: String }
-#[derive(Debug, Deserialize)]
-pub struct InsertAfterEdit { pub anchor: String, pub text: String }
-#[derive(Debug, Deserialize)]
-pub struct ReplaceEdit { pub old_text: String, pub new_text: String, pub all: Option<bool> }
-
-pub fn parse_anchor(anchor: &str) -> Option<(usize, String)> {
-    let parts: Vec<&str> = anchor.splitn(2, ':').collect();
-    if parts.len() != 2 { return None; }
-    let line: usize = parts[0].parse().ok()?;
-    let hash = parts[1].to_string();
-    Some((line, hash))
+/// Error thrown when hashline references have stale hashes
+#[derive(Debug)]
+pub struct HashlineMismatchError {
+    pub mismatches: Vec<HashMismatch>,
+    pub file_lines: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
-pub enum Op {
-    SetLine(String, String),
-    ReplaceLines(String, String, String),
-    InsertAfter(String, String),
-    Replace(String, String, bool),
+impl std::fmt::Display for HashlineMismatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mismatch_set: std::collections::HashSet<usize> = 
+            self.mismatches.iter().map(|m| m.line).collect();
+        
+        writeln!(f, "{} line{} have changed since last read. Use the updated LINE#ID references shown below (>>> marks changed lines).",
+            self.mismatches.len(),
+            if self.mismatches.len() > 1 { "s" } else { "" }
+        )?;
+        writeln!(f)?;
+        
+        // Collect lines to display (mismatch lines + 2 context)
+        let mut display_lines: Vec<usize> = Vec::new();
+        for m in &self.mismatches {
+            let lo = m.line.saturating_sub(2).max(1);
+            let hi = (m.line + 2).min(self.file_lines.len());
+            for i in lo..=hi {
+                if !display_lines.contains(&i) {
+                    display_lines.push(i);
+                }
+            }
+        }
+        display_lines.sort();
+        
+        let mut prev_line = 0usize;
+        for line_num in display_lines {
+            if prev_line != 0 && line_num > prev_line + 1 {
+                writeln!(f, "    ...")?;
+            }
+            prev_line = line_num;
+            
+            let text = &self.file_lines[line_num - 1];
+            let hash = compute_line_hash(line_num, text);
+            
+            if mismatch_set.contains(&line_num) {
+                writeln!(f, ">>> {}#{}:{}", line_num, hash, text)?;
+            } else {
+                writeln!(f, "    {}#{}:{}", line_num, hash, text)?;
+            }
+        }
+        
+        Ok(())
+    }
 }
 
-pub fn parse_edits(edits_json: &str) -> Result<Vec<Op>, String> {
-    let edit_inputs: Vec<EditInput> = serde_json::from_str(edits_json)
-        .map_err(|e| format!("Failed to parse edits: {}", e))?;
-    let mut ops = Vec::new();
-    for input in edit_inputs {
-        let edit = match input {
-            EditInput::Flat(e) => e,
-            EditInput::NestedSetLine { set_line } => Edit::SetLine { anchor: set_line.anchor, new_text: set_line.new_text },
-            EditInput::NestedReplaceLines { replace_lines } => Edit::ReplaceLines { start_anchor: replace_lines.start_anchor, end_anchor: replace_lines.end_anchor, new_text: replace_lines.new_text },
-            EditInput::NestedInsertAfter { insert_after } => Edit::InsertAfter { anchor: insert_after.anchor, text: insert_after.text },
-            EditInput::NestedReplace { replace } => Edit::Replace { old_text: replace.old_text, new_text: replace.new_text, all: replace.all },
-        };
+impl std::error::Error for HashlineMismatchError {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Hashline Edit Application
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Apply an array of hashline edits to file content.
+/// Edits are sorted bottom-up and validated before application.
+pub fn apply_hashline_edits(
+    content: &str,
+    edits: &[HashlineEdit],
+) -> Result<(String, Option<usize>), Box<dyn std::error::Error>> {
+    if edits.is_empty() {
+        return Ok((content.to_string(), None));
+    }
+    
+    // Track if original content ends with newline
+    let ends_with_newline = content.ends_with('\n');
+
+    let mut file_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let _original_file_lines = file_lines.clone();
+    let mut first_changed_line: Option<usize> = None;
+    
+    // Pre-validate: collect all hash mismatches and check for invalid ranges
+    let mut mismatches: Vec<HashMismatch> = Vec::new();
+    let mut validation_errors: Vec<String> = Vec::new();
+    
+    for edit in edits {
         match edit {
-            Edit::SetLine { anchor, new_text } => ops.push(Op::SetLine(anchor, new_text)),
-            Edit::ReplaceLines { start_anchor, end_anchor, new_text } => ops.push(Op::ReplaceLines(start_anchor, end_anchor, new_text)),
-            Edit::InsertAfter { anchor, text } => ops.push(Op::InsertAfter(anchor, text)),
-            Edit::Replace { old_text, new_text, all } => ops.push(Op::Replace(old_text, new_text, all.unwrap_or(false))),
-        }
-    }
-    Ok(ops)
-}
-
-pub fn apply_edits(content: &str, edits_json: &str) -> Result<String, String> {
-    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-    let ops = parse_edits(edits_json)?;
-    
-    for op in &ops {
-        match op {
-            Op::SetLine(anchor, _) => {
-                if let Some((line, hash)) = parse_anchor(anchor) {
-                    if line == 0 || line > lines.len() {
-                        return Err(format!("Line {} does not exist", line));
-                    }
-                    let expected = compute_line_hash(&lines[line - 1]);
-                    if hash != expected {
-                        return Err(format!(
-                            "Hash mismatch at line {}: expected {}, got {}\n\nThe file content has changed since it was read. Please re-read the file using hashread and try again with updated anchors.",
-                            line, expected, hash
+            HashlineEdit::Replace { pos, end, .. } => {
+                // Check if start line > end line
+                if let Some(end_ref) = end {
+                    if pos.line > end_ref.line {
+                        validation_errors.push(format!(
+                            "Range start line {} must be <= end line {}",
+                            pos.line, end_ref.line
                         ));
                     }
                 }
-            }
-            Op::ReplaceLines(start_anchor, end_anchor, _) => {
-                if let (Some((start, start_hash)), Some((end, end_hash))) = 
-                    (parse_anchor(start_anchor), parse_anchor(end_anchor)) {
-                    if start == 0 || end == 0 || start > lines.len() || end > lines.len() || start > end {
-                        return Err("Line number out of range".to_string());
-                    }
-                    let expected_start = compute_line_hash(&lines[start - 1]);
-                    let expected_end = compute_line_hash(&lines[end - 1]);
-                    if start_hash != expected_start || end_hash != expected_end {
-                        return Err(format!(
-                            "Hash mismatch in range {}-{}\n\nThe file content has changed since it was read. Please re-read the file using hashread and try again with updated anchors.",
-                            start, end
-                        ));
-                    }
+                validate_anchor_ref(pos, &file_lines, &mut mismatches, &mut validation_errors);
+                if let Some(end_ref) = end {
+                    validate_anchor_ref(end_ref, &file_lines, &mut mismatches, &mut validation_errors);
                 }
             }
-            Op::InsertAfter(anchor, _) => {
-                if let Some((line, hash)) = parse_anchor(anchor) {
-                    if line == 0 || line > lines.len() {
-                        return Err(format!("Line {} does not exist", line));
-                    }
-                    let expected = compute_line_hash(&lines[line - 1]);
-                    if hash != expected {
-                        return Err(format!(
-                            "Hash mismatch at line {}\n\nThe file content has changed since it was read. Please re-read the file using hashread and try again with updated anchors.",
-                            line
-                        ));
-                    }
+            HashlineEdit::Append { pos, .. } => {
+                if let Some(ref_pos) = pos {
+                    validate_anchor_ref(ref_pos, &file_lines, &mut mismatches, &mut validation_errors);
                 }
             }
-            Op::Replace(_, _, _) => {}
+            HashlineEdit::Prepend { pos, .. } => {
+                if let Some(ref_pos) = pos {
+                    validate_anchor_ref(ref_pos, &file_lines, &mut mismatches, &mut validation_errors);
+                }
+            }
         }
     }
     
-    let mut anchor_ops: Vec<Op> = Vec::new();
-    let mut replace_ops: Vec<Op> = Vec::new();
-    for op in ops {
-        match op {
-            Op::Replace(_, _, _) => replace_ops.push(op),
-            _ => anchor_ops.push(op),
-        }
+    if !validation_errors.is_empty() {
+        return Err(validation_errors.join("\n").into());
     }
     
-    anchor_ops.sort_by(|a, b| {
-        let al = match a {
-            Op::SetLine(anchor, _) => parse_anchor(anchor).map(|(l, _)| l).unwrap_or(0),
-            Op::ReplaceLines(start, _, _) => parse_anchor(start).map(|(l, _)| l).unwrap_or(0),
-            Op::InsertAfter(anchor, _) => parse_anchor(anchor).map(|(l, _)| l).unwrap_or(0),
-            Op::Replace(_, _, _) => 0,
-        };
-        let bl = match b {
-            Op::SetLine(anchor, _) => parse_anchor(anchor).map(|(l, _)| l).unwrap_or(0),
-            Op::ReplaceLines(start, _, _) => parse_anchor(start).map(|(l, _)| l).unwrap_or(0),
-            Op::InsertAfter(anchor, _) => parse_anchor(anchor).map(|(l, _)| l).unwrap_or(0),
-            Op::Replace(_, _, _) => 0,
-        };
-        bl.cmp(&al)
+    if !mismatches.is_empty() {
+        return Err(Box::new(HashlineMismatchError {
+            mismatches,
+            file_lines,
+        }));
+    }
+    
+    // Deduplicate edits targeting same location with same content
+    let edits = deduplicate_edits(edits, &file_lines);
+    
+    // Sort edits bottom-up (highest line first)
+    let mut annotated: Vec<(usize, usize, HashlineEdit)> = edits.into_iter()
+        .enumerate()
+        .map(|(idx, edit)| {
+            let (sort_line, _precedence) = match &edit {
+                HashlineEdit::Replace { pos, end, .. } => {
+                    let end_line = end.as_ref().map(|e| e.line).unwrap_or(pos.line);
+                    (end_line, 0)
+                }
+                HashlineEdit::Append { pos, .. } => {
+                    (pos.as_ref().map(|p| p.line).unwrap_or(file_lines.len()), 1)
+                }
+                HashlineEdit::Prepend { pos, .. } => {
+                    (pos.as_ref().map(|p| p.line).unwrap_or(0), 2)
+                }
+            };
+            (idx, sort_line, edit)
+        })
+        .collect();
+    
+    // Sort by line descending, then by precedence, then by original index
+    annotated.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| b.0.cmp(&a.0))
     });
     
-    for op in anchor_ops {
-        match op {
-            Op::SetLine(anchor, new_text) => {
-                if let Some((line, _)) = parse_anchor(&anchor) {
-                    let idx = line - 1;
-                    let new_lines: Vec<String> = if new_text.is_empty() { vec![] } else { new_text.lines().map(|s| s.to_string()).collect() };
-                    lines.splice(idx..=idx, new_lines);
+    // Apply edits
+    for (_idx, _, edit) in annotated {
+        match edit {
+            HashlineEdit::Replace { pos, end, lines } => {
+                if let Some(end_ref) = end {
+                    // Replace range
+                    let count = end_ref.line - pos.line + 1;
+                    file_lines.splice(pos.line - 1..pos.line - 1 + count, lines.clone());
+                } else {
+                    // Replace single line
+                    file_lines.splice(pos.line - 1..pos.line, lines.clone());
                 }
+                track_first_changed(&mut first_changed_line, pos.line);
             }
-            Op::ReplaceLines(start_anchor, end_anchor, new_text) => {
-                if let (Some((start, _)), Some((end, _))) = (parse_anchor(&start_anchor), parse_anchor(&end_anchor)) {
-                    let new_lines: Vec<String> = if new_text.is_empty() { vec![] } else { new_text.lines().map(|s| s.to_string()).collect() };
-                    lines.splice(start - 1..end, new_lines);
+            HashlineEdit::Append { pos, lines } => {
+                if lines.is_empty() {
+                    continue;
                 }
-            }
-            Op::InsertAfter(anchor, text) => {
-                if let Some((line, _)) = parse_anchor(&anchor) {
-                    let idx = line;
-                    let new_lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
-                    lines.splice(idx..idx, new_lines);
-                }
-            }
-            _ => {}
-        }
-    }
-    
-    for op in replace_ops {
-        if let Op::Replace(old_text, new_text, all) = op {
-            if all {
-                lines = lines.iter().map(|l| l.replace(&old_text, &new_text)).collect();
-            } else {
-                let content_str = lines.join("\n");
-                match find_fuzzy_match(&content_str, &old_text) {
-                    Ok((pos, matched_text)) => {
-                        let new_content = format!("{}{}{}", &content_str[..pos], new_text, &content_str[pos + matched_text.len()..]);
-                        lines = new_content.lines().map(|s| s.to_string()).collect();
+                if let Some(ref_pos) = pos {
+                    // Insert after specified line
+                    file_lines.splice(ref_pos.line..ref_pos.line, lines.clone());
+                    track_first_changed(&mut first_changed_line, ref_pos.line + 1);
+                } else {
+                    // Append at end of file
+                    if file_lines.len() == 1 && file_lines[0].is_empty() {
+                        file_lines.clear();
                     }
-                    Err(e) => return Err(e),
+                    let start_idx = file_lines.len();
+                    file_lines.extend(lines.clone());
+                    track_first_changed(&mut first_changed_line, start_idx + 1);
+                }
+            }
+            HashlineEdit::Prepend { pos, lines } => {
+                if lines.is_empty() {
+                    continue;
+                }
+                if let Some(ref_pos) = pos {
+                    // Insert before specified line
+                    file_lines.splice(ref_pos.line - 1..ref_pos.line - 1, lines.clone());
+                    track_first_changed(&mut first_changed_line, ref_pos.line);
+                } else {
+                    // Prepend at start of file
+                    if file_lines.len() == 1 && file_lines[0].is_empty() {
+                        file_lines.clear();
+                    }
+                    file_lines.splice(0..0, lines.clone());
+                    track_first_changed(&mut first_changed_line, 1);
                 }
             }
         }
     }
     
-    Ok(lines.join("\n"))
+    let result = file_lines.join("\n");
+    // Restore trailing newline if it existed in original
+    if ends_with_newline && !result.is_empty() && !result.ends_with('\n') {
+        return Ok((result + "\n", first_changed_line));
+    }
+    Ok((result, first_changed_line))
 }
+
+fn validate_anchor_ref(
+    anchor: &AnchorRef,
+    file_lines: &[String],
+    mismatches: &mut Vec<HashMismatch>,
+    validation_errors: &mut Vec<String>,
+) {
+    if anchor.line < 1 {
+        validation_errors.push(format!("Line {} must be >= 1", anchor.line));
+        return;
+    }
+    if anchor.line > file_lines.len() {
+        validation_errors.push(format!(
+            "Line {} does not exist (file has {} lines)",
+            anchor.line, file_lines.len()
+        ));
+        return;
+    }
+    
+    let actual_hash = compute_line_hash(anchor.line, &file_lines[anchor.line - 1]);
+    if actual_hash != anchor.hash {
+        mismatches.push(HashMismatch {
+            line: anchor.line,
+            expected: anchor.hash.clone(),
+            actual: actual_hash,
+        });
+    }
+}
+
+fn deduplicate_edits(edits: &[HashlineEdit], _file_lines: &[String]) -> Vec<HashlineEdit> {
+    let mut seen = std::collections::HashMap::new();
+    let mut result = Vec::new();
+    
+    for (i, edit) in edits.iter().enumerate() {
+        let key = match edit {
+            HashlineEdit::Replace { pos, end, lines } => {
+                let line_key = match end {
+                    Some(end_ref) => format!("r:{}:{}", pos.line, end_ref.line),
+                    None => format!("s:{}", pos.line),
+                };
+                format!("{}:{}", line_key, lines.join("\n"))
+            }
+            HashlineEdit::Append { pos, lines } => {
+                let line_key = pos.as_ref().map(|p| format!("i:{}", p.line))
+                    .unwrap_or_else(|| "ieof".to_string());
+                format!("{}:{}", line_key, lines.join("\n"))
+            }
+            HashlineEdit::Prepend { pos, lines } => {
+                let line_key = pos.as_ref().map(|p| format!("ib:{}", p.line))
+                    .unwrap_or_else(|| "ibef".to_string());
+                format!("{}:{}", line_key, lines.join("\n"))
+            }
+        };
+        
+        if !seen.contains_key(&key) {
+            seen.insert(key, i);
+            result.push(edit.clone());
+        }
+    }
+    
+    result
+}
+
+fn track_first_changed(first: &mut Option<usize>, line: usize) {
+    if first.is_none() || line < first.unwrap() {
+        *first = Some(line);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Commands
+// ═══════════════════════════════════════════════════════════════════════════
 
 pub fn cmd_read(file_path: &str, offset: Option<usize>, limit: Option<usize>) -> Result<String, String> {
     let content = fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
@@ -386,7 +420,11 @@ pub fn cmd_read(file_path: &str, offset: Option<usize>, limit: Option<usize>) ->
     
     let output: String = lines[start..end]
         .iter().enumerate()
-        .map(|(i, line)| { let line_num = start + i + 1; let hash = compute_line_hash(line); format!("{}:{}|{}", line_num, hash, line) })
+        .map(|(i, line)| { 
+            let line_num = start + i + 1; 
+            let hash = compute_line_hash(line_num, line); 
+            format!("{}#{}:{}", line_num, hash, line) 
+        })
         .collect::<Vec<_>>().join("\n");
     
     let end_msg = if end < total_lines {
@@ -400,24 +438,53 @@ pub fn cmd_read(file_path: &str, offset: Option<usize>, limit: Option<usize>) ->
 
 pub fn cmd_edit(file_path: &str, edits_json: &str) -> Result<String, String> {
     let content = fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
-    let new_content = apply_edits(&content, edits_json)?;
     
-    if new_content == content {
-        return Ok("No changes made".to_string());
-    }
+    let hashline_edits: Vec<HashlineEdit> = serde_json::from_str(edits_json)
+        .map_err(|e| format!("Failed to parse edits: {}", e))?;
     
-    let diff = similar::TextDiff::from_lines(&content, &new_content)
-        .iter_all_changes()
-        .map(|change| {
-            let sign = match change.tag() { similar::ChangeTag::Delete => "-", similar::ChangeTag::Insert => "+", similar::ChangeTag::Equal => " " };
-            format!("{}{}", sign, change)
-        })
-        .collect::<Vec<_>>().join("");
-    
-    fs::write(file_path, &new_content).map_err(|e| format!("Failed to write file: {}", e))?;
-    
-    Ok(format!("Edit applied successfully.\n\n<diff>\n--- {}\n+++ {}\n{}\n</diff>", file_path, file_path, diff))
+    apply_hashline_cmd(&content, file_path, &hashline_edits)
 }
+
+fn apply_hashline_cmd(content: &str, file_path: &str, edits: &[HashlineEdit]) -> Result<String, String> {
+    match apply_hashline_edits(content, edits) {
+        Ok((new_content, first_changed)) => {
+            if new_content == content {
+                return Ok("No changes made".to_string());
+            }
+            
+            let diff = similar::TextDiff::from_lines(content, &new_content)
+                .iter_all_changes()
+                .map(|change| {
+                    let sign = match change.tag() { 
+                        similar::ChangeTag::Delete => "-", 
+                        similar::ChangeTag::Insert => "+", 
+                        similar::ChangeTag::Equal => " " 
+                    };
+                    format!("{}{}", sign, change)
+                })
+                .collect::<Vec<_>>().join("");
+            
+            fs::write(file_path, &new_content).map_err(|e| format!("Failed to write file: {}", e))?;
+            
+            let first_line_msg = first_changed.map(|l| format!(" (first change at line {})", l)).unwrap_or_default();
+            
+            Ok(format!("Edit applied successfully{}.\n\n<diff>\n--- {}\n+++ {}\n{}\n</diff>", 
+                first_line_msg, file_path, file_path, diff))
+        }
+        Err(e) => {
+            if let Some(mismatch_err) = e.downcast_ref::<HashlineMismatchError>() {
+                Err(format!("Hash mismatch error:\n{}", mismatch_err))
+            } else {
+                Err(format!("Edit failed: {}", e))
+            }
+        }
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLI
+// ═══════════════════════════════════════════════════════════════════════════
 
 #[derive(Parser)]
 #[command(name = "hashline-tools")]
@@ -429,6 +496,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    Read { file_path: String, #[arg(long)] offset: Option<usize>, #[arg(long)] limit: Option<usize> },
-    Edit { file_path: String, #[arg(long)] edits: Option<String>, #[arg(long)] edits_stdin: bool },
+    Read { 
+        file_path: String, 
+        #[arg(long)] offset: Option<usize>, 
+        #[arg(long)] limit: Option<usize> 
+    },
+    Edit { 
+        file_path: String, 
+        #[arg(long)] edits: Option<String>, 
+        #[arg(long)] edits_stdin: bool 
+    },
 }

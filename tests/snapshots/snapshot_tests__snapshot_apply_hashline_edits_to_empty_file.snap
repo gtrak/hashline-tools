@@ -1,5 +1,6 @@
 ---
 source: tests/snapshot_tests.rs
-expression: "format!(\"{}\", result)"
+expression: result
 ---
-0
+line 1
+line 2

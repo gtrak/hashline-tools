@@ -1,5 +1,0 @@
----
-source: tests/snapshot_tests.rs
-expression: "format!(\"{:?}\", result)"
----
-Err("Hash mismatch at line 2: expected 5k53, got zzzz\n\nThe file content has changed since it was read. Please re-read the file using hashread and try again with updated anchors.")

@@ -2,4 +2,5 @@
 source: tests/snapshot_tests.rs
 expression: result
 ---
-
+replaced
+line with unicode: 你好

@@ -1,0 +1,11 @@
+---
+source: tests/snapshot_tests.rs
+expression: output
+---
+Result:
+first
+replaced
+third
+
+
+First changed line: Some(2)

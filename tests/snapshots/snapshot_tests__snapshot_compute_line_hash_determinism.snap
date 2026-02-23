@@ -1,9 +1,0 @@
----
-source: tests/snapshot_tests.rs
-expression: "format!(\"{:#?}\", hashes)"
----
-[
-    "d6bz",
-    "d6bz",
-    "d6bz",
-]

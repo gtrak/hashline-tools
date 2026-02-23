@@ -3,9 +3,9 @@ source: tests/snapshot_tests.rs
 expression: result
 ---
 <file>
-1:ty1l|
-2:ty1l|
-3:ty1l|
+1#KM:
+2#KM:
+3#HW:
 
 (End of file - 3 total lines)
 </file>

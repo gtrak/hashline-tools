@@ -1,0 +1,10 @@
+---
+source: tests/snapshot_tests.rs
+expression: result
+---
+line 1
+new line 1.5
+line 2
+line 3
+line 4
+modified line 5
