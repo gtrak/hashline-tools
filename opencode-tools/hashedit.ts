@@ -37,7 +37,7 @@ function validateEdit(edit: any, op: string, index: number): void {
 }
 
 export default tool({
-  description: "Edit file using hash-anchored line references. CRITICAL: Must call hashread first to get valid LINE#HASH anchors.",
+  description: "Edit file using hash-anchored line references. Supports MULTIPLE operations - use arrays to make several edits in one call. CRITICAL: Must call hashread first to get valid LINE#HASH anchors.",
   args: {
     filePath: tool.schema.string().describe("The path to the file to edit"),
     replace: tool.schema.optional(tool.schema.array(
@@ -166,13 +166,7 @@ export default tool({
       return `Edited ${args.filePath}:\n\n${diffContent}`;
     } catch (error: any) {
       const stderr = error?.stderr?.toString() || error?.message || String(error);
-
-      if (stderr.includes("lines have changed") || stderr.includes("HashlineMismatchError")) {
-        const changedLinesMatch = stderr.match(/>>>\s*(\d+)#([A-Z]+):/g);
-        throw new Error(`Hash mismatch: file was modified since last read. Re-read the file with hashread to get fresh LINE#HASH anchors, then retry the edit. The changed lines are: ${changedLinesMatch?.join(", ") || "see error details"}`);
-      }
-
-      throw error;
+      throw new Error(stderr);
     }
   },
 });
