@@ -1,8 +1,7 @@
 import { tool } from "@opencode-ai/plugin";
 import { $ } from "bun";
-
 export default tool({
-  description: "Read file with hashline format. Each line prefixed with LINE#HASH:",
+  description: "Read file with hashline format. Returns lines prefixed with LINE#HASH: where HASH is a 2-character code (e.g., 'AB', 'X3') that must be used in hashedit. Example: '5#AB: const x = 5;' - use pos: {line: 5, hash: 'AB'}",
   args: {
     filePath: tool.schema.string().describe("The path to the file to read"),
     offset: tool.schema.number().optional().describe("Line offset (0-based)"),

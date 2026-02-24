@@ -37,18 +37,18 @@ function validateEdit(edit: any, op: string, index: number): void {
 }
 
 export default tool({
-  description: "Edit file using hash-anchored line references. Supports MULTIPLE operations - use arrays to make several edits in one call. CRITICAL: Must call hashread first to get valid LINE#HASH anchors.",
+  description: "Edit file using hash-anchored line references. Supports MULTIPLE operations in a SINGLE call. CRITICAL RULES: 1) Must call hashread first to get LINE#HASH values. 2) Hashes become INVALID immediately after any edit - for multiple edits you MUST combine them in ONE hashedit call with an array, OR re-hashread before each subsequent edit. 3) The 'hash' field MUST be exactly 2 characters from hashread output. Example workflow: hashread shows '5#AB: const x = 5;' then use replace: [{pos: {line: 5, hash: 'AB'}, lines: ['new content']}] - if you need more edits, include them in the same call's replace/append/prepend/delete arrays or run hashread again.",
   args: {
     filePath: tool.schema.string().describe("The path to the file to edit"),
     replace: tool.schema.optional(tool.schema.array(
       tool.schema.object({
         pos: tool.schema.object({
           line: tool.schema.number().describe("Line number (1-based)"),
-          hash: tool.schema.string().describe("Line hash (2 chars from LINE#HASH)"),
+          hash: tool.schema.string().describe("EXACTLY 2 characters from hashread LINE#HASH output (e.g., 'AB', 'X3'). NOT the line content, NOT the full hash - just the 2-char code after LINE#"),
         }),
         end: tool.schema.optional(tool.schema.object({
           line: tool.schema.number(),
-          hash: tool.schema.string(),
+          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH in hashread output (e.g., 'AB')"),
         })),
         lines: tool.schema.array(tool.schema.string()).describe("Replacement lines"),
       })
@@ -57,7 +57,7 @@ export default tool({
       tool.schema.object({
         pos: tool.schema.optional(tool.schema.object({
           line: tool.schema.number(),
-          hash: tool.schema.string(),
+          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH (e.g., 'AB')"),
         })),
         lines: tool.schema.array(tool.schema.string()),
       })
@@ -66,7 +66,7 @@ export default tool({
       tool.schema.object({
         pos: tool.schema.optional(tool.schema.object({
           line: tool.schema.number(),
-          hash: tool.schema.string(),
+          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH (e.g., 'AB')"),
         })),
         lines: tool.schema.array(tool.schema.string()),
       })
@@ -75,11 +75,11 @@ export default tool({
       tool.schema.object({
         pos: tool.schema.object({
           line: tool.schema.number(),
-          hash: tool.schema.string(),
+          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH (e.g., 'AB')"),
         }),
         end: tool.schema.optional(tool.schema.object({
           line: tool.schema.number(),
-          hash: tool.schema.string(),
+          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH (e.g., 'AB')"),
         })),
       })
     )).describe("Delete operations: [{pos: {line, hash}}] or [{pos, end}] for range"),
@@ -136,7 +136,8 @@ export default tool({
     if (args.delete) {
       args.delete.forEach((edit: any, i: number) => {
         validateEdit(edit, 'delete', i);
-        edits.push({ op: 'delete', pos: edit.pos, end: edit.end });
+        // Delete is implemented as replace with empty lines
+        edits.push({ op: 'replace', pos: edit.pos, end: edit.end, lines: [] });
       });
     }
     
