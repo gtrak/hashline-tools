@@ -248,6 +248,41 @@ pub fn apply_hashline_edits(
     // Deduplicate edits targeting same location with same content
     let edits = deduplicate_edits(edits, &file_lines);
     
+    // Check for overlapping replace regions
+    let mut overlapping: Vec<String> = Vec::new();
+    let replace_edits: Vec<_> = edits.iter().enumerate()
+        .filter(|(_, e)| matches!(e, HashlineEdit::Replace { .. }))
+        .collect();
+    for i in 0..replace_edits.len() {
+        let (_idx_a, edit_a) = replace_edits[i];
+        let (a_start, a_end) = match edit_a {
+            HashlineEdit::Replace { pos, end, .. } => {
+                (pos.line, end.as_ref().map(|e| e.line).unwrap_or(pos.line))
+            }
+            _ => unreachable!(),
+        };
+        for j in (i + 1)..replace_edits.len() {
+            let (_idx_b, edit_b) = replace_edits[j];
+            let (b_start, b_end) = match edit_b {
+                HashlineEdit::Replace { pos, end, .. } => {
+                    (pos.line, end.as_ref().map(|e| e.line).unwrap_or(pos.line))
+                }
+                _ => unreachable!(),
+            };
+            // Check if regions overlap
+            if !(a_end < b_start || b_end < a_start) {
+                overlapping.push(format!("  - Edit at lines {}-{} overlaps with edit at lines {}-{}",
+                    a_start, a_end, b_start, b_end));
+            }
+        }
+    }
+    if !overlapping.is_empty() {
+        return Err(format!(
+            "Overlapping edits detected. Combine overlapping edits into a single operation:\n{}",
+            overlapping.join("\n")
+        ).into());
+    }
+    
     // Sort edits bottom-up (highest line first)
     let mut annotated: Vec<(usize, usize, HashlineEdit)> = edits.into_iter()
         .enumerate()
