@@ -15,9 +15,10 @@ const HASH_SEED: u32 = 0;
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Compute a short 2-character hash of a single line using xxHash32.
-/// Uses whitespace-normalized line. For lines with no alphanumeric chars,
-/// mixes in the line number to reduce collisions.
-pub fn compute_line_hash(line_num: usize, line: &str) -> String {
+/// Uses whitespace-normalized line. Creates a hash chain where each line's hash
+/// depends on the previous line's hash, ensuring that any change invalidates
+/// all subsequent line hashes.
+pub fn compute_line_hash(line_num: usize, line: &str, prev_hash: Option<&str>) -> String {
     // Remove trailing carriage return
     let line = if line.ends_with('\r') {
         &line[..line.len() - 1]
@@ -31,8 +32,15 @@ pub fn compute_line_hash(line_num: usize, line: &str) -> String {
     // Check if line has significant characters (alphanumeric)
     let has_significant = normalized.chars().any(|c| c.is_alphanumeric());
     
-    // Use line number as seed if no significant characters
-    let seed = if has_significant {
+    // Build seed from previous hash (if any) or use defaults
+    let seed = if let Some(prev) = prev_hash {
+        // Convert previous 2-char hash to u32 seed
+        let mut seed_val = 0u32;
+        for c in prev.chars() {
+            seed_val = seed_val.wrapping_mul(256).wrapping_add(c as u32);
+        }
+        seed_val
+    } else if has_significant {
         HASH_SEED
     } else {
         line_num as u32
@@ -52,10 +60,6 @@ pub fn compute_line_hash(line_num: usize, line: &str) -> String {
     )
 }
 
-/// Format a line tag: "LINE#HASH"
-pub fn format_line_tag(line_num: usize, line: &str) -> String {
-    format!("{}#{}", line_num, compute_line_hash(line_num, line))
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Anchor Parsing
@@ -183,6 +187,17 @@ impl std::fmt::Display for HashlineMismatchError {
         display_lines.sort();
         
         let mut prev_line = 0usize;
+        
+        // Pre-compute all cumulative hashes for the file
+        let mut prev_hash: Option<&str> = None;
+        let mut cumulative_hashes: Vec<String> = Vec::new();
+        for (i, line) in self.file_lines.iter().enumerate() {
+            let line_num = i + 1;
+            let hash_str = compute_line_hash(line_num, line, prev_hash);
+            cumulative_hashes.push(hash_str.clone());
+            prev_hash = Some(&cumulative_hashes[i]);
+        }
+        
         for line_num in display_lines {
             if prev_line != 0 && line_num > prev_line + 1 {
                 writeln!(f, "    ...")?;
@@ -190,7 +205,7 @@ impl std::fmt::Display for HashlineMismatchError {
             prev_line = line_num;
             
             let text = &self.file_lines[line_num - 1];
-            let hash = compute_line_hash(line_num, text);
+            let hash = &cumulative_hashes[line_num - 1];
             
             if mismatch_set.contains(&line_num) {
                 writeln!(f, ">>> {}#{}:{}", line_num, hash, text)?;
@@ -413,12 +428,25 @@ fn validate_anchor_ref(
         return;
     }
     
-    let actual_hash = compute_line_hash(anchor.line, &file_lines[anchor.line - 1]);
-    if actual_hash != anchor.hash {
+    // Compute cumulative hashes up to the anchor line
+    let mut prev_hash: Option<&str> = None;
+    let mut cumulative_hashes: Vec<String> = Vec::new();
+    for (i, line) in file_lines.iter().enumerate() {
+        let line_num = i + 1;
+        let hash_str = compute_line_hash(line_num, line, prev_hash);
+        cumulative_hashes.push(hash_str.clone());
+        prev_hash = Some(&cumulative_hashes[i]);
+        if line_num == anchor.line {
+            break;
+        }
+    }
+    
+    let actual_hash = &cumulative_hashes[anchor.line - 1];
+    if *actual_hash != anchor.hash {
         mismatches.push(HashMismatch {
             line: anchor.line,
             expected: anchor.hash.clone(),
-            actual: actual_hash,
+            actual: actual_hash.to_string(),
         });
     }
 }
@@ -478,12 +506,23 @@ pub fn cmd_read(file_path: &str, offset: Option<usize>, limit: Option<usize>) ->
     if start >= total_lines {
         return Ok("<file>\n(End of file - 0 lines)\n</file>".to_string());
     }
+    let mut prev_hash: Option<&str> = None;
+    let mut cumulative_hashes: Vec<String> = Vec::new();
+    
+    // Compute cumulative hashes from line 1 up to the end of the requested range
+    for (i, line) in lines.iter().enumerate() {
+        let line_num = i + 1;
+        let hash = compute_line_hash(line_num, line, prev_hash);
+        cumulative_hashes.push(hash.clone());
+        prev_hash = Some(&cumulative_hashes[i]);
+    }
+    
     
     let output: String = lines[start..end]
         .iter().enumerate()
         .map(|(i, line)| { 
             let line_num = start + i + 1; 
-            let hash = compute_line_hash(line_num, line); 
+            let hash = &cumulative_hashes[line_num - 1];
             format!("{}#{}:{}", line_num, hash, line) 
         })
         .collect::<Vec<_>>().join("\n");
@@ -538,6 +577,16 @@ fn generate_hash_aware_diff(old_content: &str, new_content: &str, first_changed_
     let old_lines: Vec<&str> = old_content.lines().collect();
     let new_lines: Vec<&str> = new_content.lines().collect();
     let total_new_lines = new_lines.len();
+    
+    // Compute cumulative hashes for all new lines
+    let mut prev_hash: Option<&str> = None;
+    let mut new_line_hashes: Vec<String> = Vec::new();
+    for (i, line) in new_lines.iter().enumerate() {
+        let line_num = i + 1;
+        let hash_str = compute_line_hash(line_num, line, prev_hash);
+        new_line_hashes.push(hash_str.clone());
+        prev_hash = Some(&new_line_hashes[i]);
+    }
     
     // Use similar to get changes
     let diff = similar::TextDiff::from_lines(old_content, new_content);
@@ -604,7 +653,7 @@ fn generate_hash_aware_diff(old_content: &str, new_content: &str, first_changed_
         
         for line_num in range_start..=range_end {
             let new_line_content = new_lines[line_num - 1];
-            let new_hash = compute_line_hash(line_num, new_line_content);
+            let new_hash = &new_line_hashes[line_num - 1];
             
             // Check if this line was deleted in old version
             let was_deleted = deleted_old_lines.contains(&line_num);

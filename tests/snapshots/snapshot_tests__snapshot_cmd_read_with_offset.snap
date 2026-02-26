@@ -3,11 +3,11 @@ source: tests/snapshot_tests.rs
 expression: result
 ---
 <file>
-6#ZT:line 6
-7#BX:line 7
-8#PB:line 8
-9#PJ:line 9
-10#NV:line 10
+6#NZ:line 6
+7#MN:line 7
+8#BK:line 8
+9#VB:line 9
+10#ZR:line 10
 
 (File has more lines. Use 'offset' parameter to read beyond line 10)
 </file>

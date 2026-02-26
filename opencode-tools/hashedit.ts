@@ -5,7 +5,6 @@ function validateAnchor(anchor: any, fieldName: string): void {
   if (typeof anchor !== 'string') {
     throw new Error(`${fieldName}: must be a string in format "LINE#HASH" (e.g., "8#RT")`);
   }
-  // Parse format: "LINE#HASH" (e.g., "8#RT")
   const parts = anchor.split('#');
   if (parts.length !== 2) {
     throw new Error(`${fieldName}: invalid format '${anchor}', expected "LINE#HASH" (e.g., "8#RT")`);
@@ -43,43 +42,42 @@ function validateEdit(edit: any, op: string, index: number): void {
 }
 
 export default tool({
-  description: "Edit file using hash-anchored line references. CRITICAL: hashread and hashedit must be called CONSECUTIVELY with NO OTHER COMMANDS in between. Do NOT run git, grep, sed, shell commands, or any other operations between hashread and hashedit - this will invalidate the hashes. If you restore a file with git, call hashread AGAIN afterward. When using multiple edits, combine them in ONE hashedit call with arrays, or re-hashread before each subsequent edit.",
+  description: "Edit file using hash-anchored line references. CRITICAL: hashread MUST be called immediately before this tool - every edit changes cumulative hashes, so you must re-read before each edit. Use anchors from the most recent hashread output in format LINE#HASH (e.g., \"8#RT\"). After editing, hashes for ALL lines after the edit point change. Combine multiple edits in one call when possible.",
   args: {
     filePath: tool.schema.string().describe("The path to the file to edit"),
     replace: tool.schema.optional(tool.schema.array(
       tool.schema.object({
-        pos: tool.schema.string().describe('Anchor in format "LINE#HASH" from hashread output (e.g., "8#RT")'),
-        end: tool.schema.optional(tool.schema.string().describe('End anchor for range replacement in format "LINE#HASH" (e.g., "10#BY")')),
+        pos: tool.schema.string().describe('Anchor in format "LINE#HASH" from hashread (e.g., "8#RT")'),
+        end: tool.schema.optional(tool.schema.string().describe('End anchor "LINE#HASH" for range replacement')),
         lines: tool.schema.array(tool.schema.string()).describe("Replacement lines"),
       })
-    )).describe('Replace operations: [{pos: "LINE#HASH", lines: ["..."]}] or [{pos: "START#HASH", end: "END#HASH", lines: ["..."]}] for range'),
+    )).describe('Replace: [{pos: "LINE#HASH", lines: ["..."]}] or range [{pos: "START#HASH", end: "END#HASH", lines: ["..."]}]'),
     append: tool.schema.optional(tool.schema.array(
       tool.schema.object({
-        pos: tool.schema.optional(tool.schema.string().describe('Anchor in format "LINE#HASH" (e.g., "8#RT"). Omit for EOF.')),
+        pos: tool.schema.optional(tool.schema.string().describe('Anchor "LINE#HASH". Omit for EOF.')),
         lines: tool.schema.array(tool.schema.string()),
       })
-    )).describe('Append operations: [{pos: "LINE#HASH", lines: ["..."]}] inserts after specified line, or [{lines: ["..."]}] for EOF. TIP: To add a new method inside an impl block, append after the last method\'s closing brace (line with \'    }\' at 4-space indent, not the impl\'s \'}\' at 0-space indent).'),
+    )).describe('Append: [{pos: "LINE#HASH", lines: ["..."]}] after line, or [{lines: ["..."]}] for EOF'),
     prepend: tool.schema.optional(tool.schema.array(
       tool.schema.object({
-        pos: tool.schema.optional(tool.schema.string().describe('Anchor in format "LINE#HASH" (e.g., "8#RT"). Omit for BOF.')),
+        pos: tool.schema.optional(tool.schema.string().describe('Anchor "LINE#HASH". Omit for BOF.')),
         lines: tool.schema.array(tool.schema.string()),
       })
-    )).describe('Prepend operations: [{pos: "LINE#HASH", lines: ["..."]}] or [{lines: ["..."]}] for BOF'),
+    )).describe('Prepend: [{pos: "LINE#HASH", lines: ["..."]}] before line, or [{lines: ["..."]}] for BOF'),
     delete: tool.schema.optional(tool.schema.array(
       tool.schema.object({
-        pos: tool.schema.string().describe('Anchor in format "LINE#HASH" (e.g., "8#RT")'),
-        end: tool.schema.optional(tool.schema.string().describe('End anchor for range deletion in format "LINE#HASH" (e.g., "10#BY")')),
+        pos: tool.schema.string().describe('Anchor "LINE#HASH"'),
+        end: tool.schema.optional(tool.schema.string().describe('End anchor for range deletion')),
       })
-    )).describe('Delete operations: [{pos: "LINE#HASH"}] or [{pos: "START#HASH", end: "END#HASH"}] for range'),
+    )).describe('Delete: [{pos: "LINE#HASH"}] or range [{pos: "START#HASH", end: "END#HASH"}]'),
     write: tool.schema.optional(tool.schema.string())
-      .describe("Write operation: replace entire file with new content. Use this instead of replace/append/prepend/delete to completely rewrite the file."),
+      .describe("Write: replace entire file with new content."),
   },
   async execute(args, context) {
     const filepath = args.filePath.startsWith("/") 
       ? args.filePath 
       : `${context.directory}/${args.filePath}`;
     
-    // Handle write operation - replaces entire file content
     if (args.write !== undefined) {
       const fileExists = await Bun.file(filepath).exists();
       await Bun.write(filepath, args.write);
@@ -88,11 +86,7 @@ export default tool({
       
       context.metadata({
         title: `${fileExists ? 'Updated' : 'Created'}: ${args.filePath}`,
-        metadata: {
-          file: args.filePath,
-          size: size,
-          created: !fileExists,
-        }
+        metadata: { file: args.filePath, size, created: !fileExists }
       });
       
       return `${fileExists ? 'Updated' : 'Created'} file: ${args.filePath}\nSize: ${size} bytes`;
@@ -124,13 +118,12 @@ export default tool({
     if (args.delete) {
       args.delete.forEach((edit: any, i: number) => {
         validateEdit(edit, 'delete', i);
-        // Delete is implemented as replace with empty lines
         edits.push({ op: 'replace', pos: edit.pos, end: edit.end, lines: [] });
       });
     }
     
     if (edits.length === 0) {
-      throw new Error('No edits provided. Use at least one of: replace, append, prepend, delete, write.\n\nExample:\n  replace: [{pos: "8#RT", lines: ["new content"]}]\n  write: "entire file content here"');
+      throw new Error('No edits provided. Use replace/append/prepend/delete/write.');
     }
     
     const editsJson = JSON.stringify(edits);
@@ -145,11 +138,7 @@ export default tool({
       
       context.metadata({
         title: `Edit: ${args.filePath}`,
-        metadata: {
-          file: args.filePath,
-          operations: edits.length,
-          diff: diffContent
-        }
+        metadata: { file: args.filePath, operations: edits.length, diff: diffContent }
       });
       
       return `Edited ${args.filePath}:\n\n${diffContent}`;

@@ -1,4 +1,21 @@
 use hashline_tools::*;
+
+// Helper function to compute cumulative hashes for a file and get a specific line's hash
+fn get_line_hash(content: &str, line_num: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut prev_hash: Option<&str> = None;
+    let mut cumulative_hashes: Vec<String> = Vec::new();
+    
+    for (i, line) in lines.iter().enumerate() {
+        let ln = i + 1;
+        let hash = compute_line_hash(ln, line, prev_hash);
+        cumulative_hashes.push(hash);
+        prev_hash = Some(&cumulative_hashes[i]);
+    }
+    
+    cumulative_hashes[line_num - 1].clone()
+}
+
 use regex::Regex;
 use std::fs;
 use std::io::Write;
@@ -100,8 +117,8 @@ fn snapshot_cmd_read_offset_beyond_file() {
 #[test]
 fn snapshot_compute_line_hash_determinism() {
     // Hash should be deterministic for same input
-    let hash1 = compute_line_hash(1, "test line");
-    let hash2 = compute_line_hash(1, "test line");
+    let hash1 = compute_line_hash(1, "test line", None);
+    let hash2 = compute_line_hash(1, "test line", None);
     assert_eq!(hash1, hash2);
     // Hash should be 2 characters
     assert_eq!(hash1.len(), 2);
@@ -110,26 +127,27 @@ fn snapshot_compute_line_hash_determinism() {
 #[test]
 fn snapshot_compute_line_hash_edge_cases() {
     // Empty line
-    let hash1 = compute_line_hash(1, "");
+    let hash1 = compute_line_hash(1, "", None);
     assert_eq!(hash1.len(), 2);
     
     // Line with only whitespace (should use line number as seed)
-    let hash2 = compute_line_hash(1, "   \t\n");
-    let hash3 = compute_line_hash(2, "   \t\n");
+    let hash2 = compute_line_hash(1, "   \t\n", None);
+    let hash3 = compute_line_hash(2, "   \t\n", None);
     // Both should be 2 characters
     assert_eq!(hash2.len(), 2);
     assert_eq!(hash3.len(), 2);
     
     // Same content, different line numbers (non-whitespace)
-    let hash4 = compute_line_hash(1, "content");
-    let hash5 = compute_line_hash(2, "content");
+    let hash4 = compute_line_hash(1, "content", None);
+    let hash5 = compute_line_hash(2, "content", None);
     // Same content should produce same hash regardless of line number (when it has alphanumeric)
     assert_eq!(hash4, hash5);
 }
 
 #[test]
 fn snapshot_format_line_tag() {
-    let tag = format_line_tag(42, "test content");
+    let hash = compute_line_hash(42, "test content", None);
+    let tag = format!("{}#{}", 42, hash);
     // Format should be "LINE#HASH"
     assert!(tag.contains('#'));
     let parts: Vec<&str> = tag.split('#').collect();
@@ -143,7 +161,7 @@ fn snapshot_apply_hashline_edits_replace_single() {
     let content = "first\nsecond\nthird\n";
     let edits = vec![
         HashlineEdit::Replace {
-            pos: AnchorRef { line: 2, hash: compute_line_hash(2, "second") },
+            pos: AnchorRef { line: 2, hash: get_line_hash(content, 2) },
             end: None,
             lines: vec!["replaced".to_string()],
         }
@@ -158,8 +176,8 @@ fn snapshot_apply_hashline_edits_replace_range() {
     let content = "first\nsecond\nthird\n";
     let edits = vec![
         HashlineEdit::Replace {
-            pos: AnchorRef { line: 1, hash: compute_line_hash(1, "first") },
-            end: Some(AnchorRef { line: 3, hash: compute_line_hash(3, "third") }),
+            pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
+            end: Some(AnchorRef { line: 3, hash: get_line_hash(content, 3) }),
             lines: vec!["replaced".to_string()],
         }
     ];
@@ -172,7 +190,7 @@ fn snapshot_apply_hashline_edits_append() {
     let content = "first\nsecond\n";
     let edits = vec![
         HashlineEdit::Append {
-            pos: Some(AnchorRef { line: 1, hash: compute_line_hash(1, "first") }),
+            pos: Some(AnchorRef { line: 1, hash: get_line_hash(content, 1) }),
             lines: vec!["inserted".to_string()],
         }
     ];
@@ -198,7 +216,7 @@ fn snapshot_apply_hashline_edits_prepend() {
     let content = "first\nsecond\n";
     let edits = vec![
         HashlineEdit::Prepend {
-            pos: Some(AnchorRef { line: 2, hash: compute_line_hash(2, "second") }),
+            pos: Some(AnchorRef { line: 2, hash: get_line_hash(content, 2) }),
             lines: vec!["before".to_string()],
         }
     ];
@@ -237,7 +255,7 @@ fn snapshot_apply_hashline_edits_empty_new_text() {
     let content = "first\nsecond\nthird\n";
     let edits = vec![
         HashlineEdit::Replace {
-            pos: AnchorRef { line: 2, hash: compute_line_hash(2, "second") },
+            pos: AnchorRef { line: 2, hash: get_line_hash(content, 2) },
             end: None,
             lines: vec![],
         }
@@ -264,7 +282,7 @@ fn snapshot_apply_hashline_edits_single_line() {
     let content = "only\n";
     let edits = vec![
         HashlineEdit::Replace {
-            pos: AnchorRef { line: 1, hash: compute_line_hash(1, "only") },
+            pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
             end: None,
             lines: vec!["modified".to_string()],
         }
@@ -278,11 +296,11 @@ fn snapshot_apply_hashline_edits_multiple_operations() {
     let content = "line 1\nline 2\nline 3\nline 4\nline 5\n";
     let edits = vec![
         HashlineEdit::Append {
-            pos: Some(AnchorRef { line: 1, hash: compute_line_hash(1, "line 1") }),
+            pos: Some(AnchorRef { line: 1, hash: get_line_hash(content, 1) }),
             lines: vec!["new line 1.5".to_string()],
         },
         HashlineEdit::Replace {
-            pos: AnchorRef { line: 5, hash: compute_line_hash(5, "line 5") },
+            pos: AnchorRef { line: 5, hash: get_line_hash(content, 5) },
             end: None,
             lines: vec!["modified line 5".to_string()],
         }
@@ -346,7 +364,7 @@ fn snapshot_hashline_append_after_last_line() {
     let content = "first\nsecond\n";
     let edits = vec![
         HashlineEdit::Append {
-            pos: Some(AnchorRef { line: 2, hash: compute_line_hash(2, "second") }),
+            pos: Some(AnchorRef { line: 2, hash: get_line_hash(content, 2) }),
             lines: vec!["third".to_string()],
         }
     ];
@@ -359,7 +377,7 @@ fn snapshot_apply_hashline_edits_with_special_characters() {
     let content = "line with \t tabs\nline with unicode: 你好\n";
     let edits = vec![
         HashlineEdit::Replace {
-            pos: AnchorRef { line: 1, hash: compute_line_hash(1, "line with \t tabs") },
+            pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
             end: None,
             lines: vec!["replaced".to_string()],
         }
@@ -383,8 +401,8 @@ fn snapshot_apply_hashline_edits_replace_lines_range_mismatch() {
     // Test that start line must be <= end line
     let edits = vec![
         HashlineEdit::Replace {
-            pos: AnchorRef { line: 3, hash: compute_line_hash(3, "line 3") },
-            end: Some(AnchorRef { line: 1, hash: compute_line_hash(1, "line 1") }),
+            pos: AnchorRef { line: 3, hash: get_line_hash(content, 3) },
+            end: Some(AnchorRef { line: 1, hash: get_line_hash(content, 1) }),
             lines: vec!["replaced".to_string()],
         }
     ];
@@ -396,7 +414,7 @@ fn snapshot_apply_hashline_edits_replace_lines_range_mismatch() {
 fn snapshot_apply_hashline_edits_deduplication() {
     let content = "first\nsecond\n";
     let edit = HashlineEdit::Replace {
-        pos: AnchorRef { line: 1, hash: compute_line_hash(1, "first") },
+        pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
         end: None,
         lines: vec!["replaced".to_string()],
     };
@@ -413,7 +431,7 @@ fn snapshot_apply_hashline_edits_noop_detection() {
     let content = "first\nsecond\n";
     let edits = vec![
         HashlineEdit::Replace {
-            pos: AnchorRef { line: 1, hash: compute_line_hash(1, "first") },
+            pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
             end: None,
             lines: vec!["first".to_string()], // Same content
         }
@@ -431,9 +449,9 @@ fn test_multiple_edits_applied_bottom_up() {
     // If prepend at line 1 is applied before replace at line 2,
     // the replace position would shift and fail
     let content = "line 1\nline 2\nline 3\n";
-    let h1 = compute_line_hash(1, "line 1");
-    let h2 = compute_line_hash(2, "line 2");
-    let h3 = compute_line_hash(3, "line 3");
+    let h1 = get_line_hash(content, 1);
+    let h2 = get_line_hash(content, 2);
+    let h3 = get_line_hash(content, 3);
 
     let edits = vec![
         HashlineEdit::Prepend {
@@ -458,9 +476,9 @@ fn test_multiple_edits_applied_bottom_up() {
 fn test_three_edits_bottom_up() {
     // Three edits at different positions - must process in reverse order
     let content = "a\nb\nc\nd\ne\n";
-    let h1 = compute_line_hash(1, "a");
-    let h2 = compute_line_hash(2, "b");
-    let h4 = compute_line_hash(4, "d");
+    let h1 = get_line_hash(content, 1);
+    let h2 = get_line_hash(content, 2);
+    let h4 = get_line_hash(content, 4);
 
     let edits = vec![
         HashlineEdit::Replace {
@@ -489,4 +507,3 @@ fn test_three_edits_bottom_up() {
     assert!(result.contains("B"));
     assert!(result.contains("D"));
 }
-
