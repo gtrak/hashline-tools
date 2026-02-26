@@ -87,10 +87,36 @@ pub fn parse_anchor(anchor: &str) -> Option<(usize, String)> {
 // Hashline Edit Types
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AnchorRef {
     pub line: usize,
     pub hash: String,
+}
+
+impl<'de> Deserialize<'de> for AnchorRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        
+        // Parse format: "LINE#HASH" (e.g., "8#RT")
+        let parts: Vec<&str> = s.splitn(2, '#').collect();
+        if parts.len() != 2 {
+            return Err(serde::de::Error::custom(
+                format!("Invalid anchor format '{}', expected 'LINE#HASH'", s)
+            ));
+        }
+        
+        let line = parts[0].parse::<usize>()
+            .map_err(|_| serde::de::Error::custom(
+                format!("Invalid line number '{}' in anchor '{}'", parts[0], s)
+            ))?;
+        
+        let hash = parts[1].to_string();
+        
+        Ok(AnchorRef { line, hash })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -487,24 +513,16 @@ fn apply_hashline_cmd(content: &str, file_path: &str, edits: &[HashlineEdit]) ->
                 return Ok("No changes made".to_string());
             }
             
-            let diff = similar::TextDiff::from_lines(content, &new_content)
-                .iter_all_changes()
-                .map(|change| {
-                    let sign = match change.tag() { 
-                        similar::ChangeTag::Delete => "-", 
-                        similar::ChangeTag::Insert => "+", 
-                        similar::ChangeTag::Equal => " " 
-                    };
-                    format!("{}{}", sign, change)
-                })
-                .collect::<Vec<_>>().join("");
-            
             fs::write(file_path, &new_content).map_err(|e| format!("Failed to write file: {}", e))?;
             
-            let first_line_msg = first_changed.map(|l| format!(" (first change at line {})", l)).unwrap_or_default();
+            let first_changed_line = first_changed.unwrap_or(1);
+            let first_line_msg = format!(" (first change at line {})", first_changed_line);
             
-            Ok(format!("Edit applied successfully{}.\n\n<diff>\n--- {}\n+++ {}\n{}\n</diff>", 
-                first_line_msg, file_path, file_path, diff))
+            // Generate hash-aware diff
+            let diff_output = generate_hash_aware_diff(content, &new_content, first_changed_line);
+            
+            Ok(format!("Edit applied successfully{}.\n\n<diff>\n--- {}\n+++ {}\n{}\n</diff>",
+                first_line_msg, file_path, file_path, diff_output))
         }
         Err(e) => {
             if let Some(mismatch_err) = e.downcast_ref::<HashlineMismatchError>() {
@@ -514,6 +532,111 @@ fn apply_hashline_cmd(content: &str, file_path: &str, edits: &[HashlineEdit]) ->
             }
         }
     }
+}
+
+fn generate_hash_aware_diff(old_content: &str, new_content: &str, first_changed_line: usize) -> String {
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    let new_lines: Vec<&str> = new_content.lines().collect();
+    let total_new_lines = new_lines.len();
+    
+    // Use similar to get changes
+    let diff = similar::TextDiff::from_lines(old_content, new_content);
+    
+    // Collect all changed line numbers (in new file)
+    let mut changed_new_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut deleted_old_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => {
+                if let Some(new_index) = change.new_index() {
+                    changed_new_lines.insert(new_index + 1); // 1-indexed
+                }
+            }
+            similar::ChangeTag::Delete => {
+                if let Some(old_index) = change.old_index() {
+                    deleted_old_lines.insert(old_index + 1); // 1-indexed
+                }
+            }
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    
+    // Calculate display range: ±5 lines around changes
+    let mut display_ranges: Vec<(usize, usize)> = Vec::new();
+    for &line in &changed_new_lines {
+        let start = line.saturating_sub(5).max(1);
+        let end = (line + 5).min(total_new_lines);
+        display_ranges.push((start, end));
+    }
+    
+    // Merge overlapping ranges
+    display_ranges.sort_by_key(|r| r.0);
+    let mut merged_ranges: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in display_ranges {
+        if let Some(last) = merged_ranges.last_mut() {
+            if start <= last.1 + 1 {
+                last.1 = last.1.max(end);
+            } else {
+                merged_ranges.push((start, end));
+            }
+        } else {
+            merged_ranges.push((start, end));
+        }
+    }
+    
+    // If no merged ranges, show context around first_changed_line
+    if merged_ranges.is_empty() {
+        let start = first_changed_line.saturating_sub(5).max(1);
+        let end = (first_changed_line + 5).min(total_new_lines);
+        merged_ranges.push((start, end));
+    }
+    
+    // Build output
+    let mut output_lines: Vec<String> = Vec::new();
+    let mut prev_end: usize = 0;
+    
+    for (range_start, range_end) in merged_ranges {
+        // Add ellipsis if there is a gap
+        if prev_end > 0 && range_start > prev_end + 1 {
+            output_lines.push("...".to_string());
+        }
+        
+        for line_num in range_start..=range_end {
+            let new_line_content = new_lines[line_num - 1];
+            let new_hash = compute_line_hash(line_num, new_line_content);
+            
+            // Check if this line was deleted in old version
+            let was_deleted = deleted_old_lines.contains(&line_num);
+            
+            // Check if this line was inserted (new)
+            let was_inserted = changed_new_lines.contains(&line_num);
+            
+            if was_deleted {
+                // Show old content as deleted
+                let old_content = if line_num <= old_lines.len() {
+                    old_lines[line_num - 1]
+                } else {
+                    ""
+                };
+                output_lines.push(format!("-{}#  :{}", line_num, old_content));
+            }
+            
+            if was_inserted || !was_deleted {
+                // Show new content with hash
+                let sign = if was_inserted { "+" } else { " " };
+                output_lines.push(format!("{}{}#{}:{}", sign, line_num, new_hash, new_line_content));
+            }
+        }
+        
+        prev_end = range_end;
+    }
+    
+    // Add note about invalidated hashes
+    output_lines.push("".to_string());
+    output_lines.push("Note: Lines after edited regions have stale hashes. Use hashread to refresh.".to_string());
+    
+    output_lines.join("\n")
 }
 
 

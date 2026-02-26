@@ -2,14 +2,20 @@ import { tool } from "@opencode-ai/plugin";
 import { $ } from "bun";
 
 function validateAnchor(anchor: any, fieldName: string): void {
-  if (!anchor || typeof anchor !== 'object') {
-    throw new Error(`${fieldName}: must be an object {line: number, hash: string}`);
+  if (typeof anchor !== 'string') {
+    throw new Error(`${fieldName}: must be a string in format "LINE#HASH" (e.g., "8#RT")`);
   }
-  if (typeof anchor.line !== 'number' || anchor.line < 1) {
-    throw new Error(`${fieldName}.line: must be a positive number`);
+  // Parse format: "LINE#HASH" (e.g., "8#RT")
+  const parts = anchor.split('#');
+  if (parts.length !== 2) {
+    throw new Error(`${fieldName}: invalid format '${anchor}', expected "LINE#HASH" (e.g., "8#RT")`);
   }
-  if (typeof anchor.hash !== 'string' || anchor.hash.length !== 2) {
-    throw new Error(`${fieldName}.hash: must be a 2-character string (e.g., 'AB')`);
+  const lineNum = parseInt(parts[0], 10);
+  if (isNaN(lineNum) || lineNum < 1) {
+    throw new Error(`${fieldName}: line number must be a positive integer, got '${parts[0]}'`);
+  }
+  if (parts[1].length !== 2) {
+    throw new Error(`${fieldName}: hash must be exactly 2 characters, got '${parts[1]}'`);
   }
 }
 
@@ -37,52 +43,34 @@ function validateEdit(edit: any, op: string, index: number): void {
 }
 
 export default tool({
-  description: "Edit file using hash-anchored line references. Supports MULTIPLE operations in a SINGLE call. CRITICAL RULES: 1) Must call hashread first to get LINE#HASH values. 2) Hashes become INVALID immediately after any edit - for multiple edits you MUST combine them in ONE hashedit call with an array, OR re-hashread before each subsequent edit. 3) The 'hash' field MUST be exactly 2 characters from hashread output. Example workflow: hashread shows '5#AB: const x = 5;' then use replace: [{pos: {line: 5, hash: 'AB'}, lines: ['new content']}] - if you need more edits, include them in the same call's replace/append/prepend/delete arrays or run hashread again.",
+  description: "Edit file using hash-anchored line references. CRITICAL: hashread and hashedit must be called CONSECUTIVELY with NO OTHER COMMANDS in between. Do NOT run git, grep, sed, shell commands, or any other operations between hashread and hashedit - this will invalidate the hashes. If you restore a file with git, call hashread AGAIN afterward. When using multiple edits, combine them in ONE hashedit call with arrays, or re-hashread before each subsequent edit.",
   args: {
     filePath: tool.schema.string().describe("The path to the file to edit"),
     replace: tool.schema.optional(tool.schema.array(
       tool.schema.object({
-        pos: tool.schema.object({
-          line: tool.schema.number().describe("Line number (1-based)"),
-          hash: tool.schema.string().describe("EXACTLY 2 characters from hashread LINE#HASH output (e.g., 'AB', 'X3'). NOT the line content, NOT the full hash - just the 2-char code after LINE#"),
-        }),
-        end: tool.schema.optional(tool.schema.object({
-          line: tool.schema.number(),
-          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH in hashread output (e.g., 'AB')"),
-        })),
+        pos: tool.schema.string().describe('Anchor in format "LINE#HASH" from hashread output (e.g., "8#RT")'),
+        end: tool.schema.optional(tool.schema.string().describe('End anchor for range replacement in format "LINE#HASH" (e.g., "10#BY")')),
         lines: tool.schema.array(tool.schema.string()).describe("Replacement lines"),
       })
-    )).describe("Replace operations: [{pos: {line, hash}, lines: ['...']}]"),
+    )).describe('Replace operations: [{pos: "LINE#HASH", lines: ["..."]}] or [{pos: "START#HASH", end: "END#HASH", lines: ["..."]}] for range'),
     append: tool.schema.optional(tool.schema.array(
       tool.schema.object({
-        pos: tool.schema.optional(tool.schema.object({
-          line: tool.schema.number(),
-          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH (e.g., 'AB')"),
-        })),
+        pos: tool.schema.optional(tool.schema.string().describe('Anchor in format "LINE#HASH" (e.g., "8#RT"). Omit for EOF.')),
         lines: tool.schema.array(tool.schema.string()),
       })
-    )).describe("Append operations: [{pos: {line, hash}, lines: ['...']}] or [{lines: ['...']}] for EOF"),
+    )).describe('Append operations: [{pos: "LINE#HASH", lines: ["..."]}] inserts after specified line, or [{lines: ["..."]}] for EOF. TIP: To add a new method inside an impl block, append after the last method\'s closing brace (line with \'    }\' at 4-space indent, not the impl\'s \'}\' at 0-space indent).'),
     prepend: tool.schema.optional(tool.schema.array(
       tool.schema.object({
-        pos: tool.schema.optional(tool.schema.object({
-          line: tool.schema.number(),
-          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH (e.g., 'AB')"),
-        })),
+        pos: tool.schema.optional(tool.schema.string().describe('Anchor in format "LINE#HASH" (e.g., "8#RT"). Omit for BOF.')),
         lines: tool.schema.array(tool.schema.string()),
       })
-    )).describe("Prepend operations: [{pos: {line, hash}, lines: ['...']}] or [{lines: ['...']}] for BOF"),
+    )).describe('Prepend operations: [{pos: "LINE#HASH", lines: ["..."]}] or [{lines: ["..."]}] for BOF'),
     delete: tool.schema.optional(tool.schema.array(
       tool.schema.object({
-        pos: tool.schema.object({
-          line: tool.schema.number(),
-          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH (e.g., 'AB')"),
-        }),
-        end: tool.schema.optional(tool.schema.object({
-          line: tool.schema.number(),
-          hash: tool.schema.string().describe("EXACTLY 2 characters from LINE#HASH (e.g., 'AB')"),
-        })),
+        pos: tool.schema.string().describe('Anchor in format "LINE#HASH" (e.g., "8#RT")'),
+        end: tool.schema.optional(tool.schema.string().describe('End anchor for range deletion in format "LINE#HASH" (e.g., "10#BY")')),
       })
-    )).describe("Delete operations: [{pos: {line, hash}}] or [{pos, end}] for range"),
+    )).describe('Delete operations: [{pos: "LINE#HASH"}] or [{pos: "START#HASH", end: "END#HASH"}] for range'),
     write: tool.schema.optional(tool.schema.string())
       .describe("Write operation: replace entire file with new content. Use this instead of replace/append/prepend/delete to completely rewrite the file."),
   },
@@ -142,7 +130,7 @@ export default tool({
     }
     
     if (edits.length === 0) {
-      throw new Error("No edits provided. Use at least one of: replace, append, prepend, delete, write.\n\nExample:\n  replace: [{pos: {line: 1, hash: 'AB'}, lines: ['new content']}]\n  write: 'entire file content here'");
+      throw new Error('No edits provided. Use at least one of: replace, append, prepend, delete, write.\n\nExample:\n  replace: [{pos: "8#RT", lines: ["new content"]}]\n  write: "entire file content here"');
     }
     
     const editsJson = JSON.stringify(edits);

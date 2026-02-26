@@ -1,7 +1,8 @@
 import { tool } from "@opencode-ai/plugin";
 import { $ } from "bun";
 export default tool({
-  description: "Read file with hashline format. Returns lines prefixed with LINE#HASH: where HASH is a 2-character code (e.g., 'AB', 'X3') that must be used in hashedit. Example: '5#AB: const x = 5;' - use pos: {line: 5, hash: 'AB'}. IMPORTANT: When you know the approximate line number (from error messages, stack traces, or previous reads), USE the 'offset' parameter instead of reading the entire file. For example, if looking for code around line 375, use offset=370 with limit=20. This is much more efficient than reading the whole file or making multiple small reads.",
+  description: 'Read file with hashline format. Returns lines prefixed with LINE#HASH: where HASH is a 2-character code (e.g., "AB", "X3") that must be used in hashedit. Example: "5#AB: const x = 5;" - use anchor "5#AB" in hashedit. IMPORTANT: The hashes returned are ONLY VALID IMMEDIATELY AFTER this call. You MUST call hashedit NEXT with these hashes - do NOT run any other commands (git, grep, sed, etc.) between hashread and hashedit or the hashes will become invalid. When you know the approximate line number, USE the \'offset\' parameter (e.g., offset=370, limit=20 for code around line 375).',
+
   args: {
     filePath: tool.schema.string().describe("The path to the file to read"),
     offset: tool.schema.number().optional().describe("0-based line number to start reading from. USE THIS when you know approximately where content is (e.g., from error messages or previous reads showing line numbers). This is more efficient than reading the entire file."),
