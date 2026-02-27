@@ -108,13 +108,13 @@ impl<'de> Deserialize<'de> for AnchorRef {
         let parts: Vec<&str> = s.splitn(2, '#').collect();
         if parts.len() != 2 {
             return Err(serde::de::Error::custom(
-                format!("Invalid anchor format '{}', expected 'LINE#HASH'", s)
+                format!("Invalid anchor format '{}', expected format 'LINE#HASH' (e.g., '8#RT')", s)
             ));
         }
         
         let line = parts[0].parse::<usize>()
             .map_err(|_| serde::de::Error::custom(
-                format!("Invalid line number '{}' in anchor '{}'", parts[0], s)
+                format!("Invalid line number '{}' in anchor '{}', expected format 'LINE#HASH' (e.g., '8#RT')", parts[0], s)
             ))?;
         
         let hash = parts[1].to_string();

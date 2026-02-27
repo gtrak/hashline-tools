@@ -1,32 +1,17 @@
 import { tool } from "@opencode-ai/plugin";
 import { $ } from "bun";
 
-function validateAnchor(anchor: any, fieldName: string): void {
-  if (typeof anchor !== 'string') {
-    throw new Error(`${fieldName}: must be a string in format "LINE#HASH" (e.g., "8#RT")`);
-  }
-  const parts = anchor.split('#');
-  if (parts.length !== 2) {
-    throw new Error(`${fieldName}: invalid format '${anchor}', expected "LINE#HASH" (e.g., "8#RT")`);
-  }
-  const lineNum = parseInt(parts[0], 10);
-  if (isNaN(lineNum) || lineNum < 1) {
-    throw new Error(`${fieldName}: line number must be a positive integer, got '${parts[0]}'`);
-  }
-  if (parts[1].length !== 2) {
-    throw new Error(`${fieldName}: hash must be exactly 2 characters, got '${parts[1]}'`);
-  }
-}
-
 function validateEdit(edit: any, op: string, index: number): void {
   if (!edit || typeof edit !== 'object') {
     throw new Error(`${op}[${index}]: must be an object`);
   }
   
-  validateAnchor(edit.pos, `${op}[${index}].pos`);
+  if (edit.pos !== undefined && typeof edit.pos !== 'string') {
+    throw new Error(`${op}[${index}].pos: must be a string in format "LINE#HASH" (e.g., "8#RT")`);
+  }
   
-  if (edit.end) {
-    validateAnchor(edit.end, `${op}[${index}].end`);
+  if (edit.end !== undefined && typeof edit.end !== 'string') {
+    throw new Error(`${op}[${index}].end: must be a string in format "LINE#HASH" (e.g., "8#RT")`);
   }
   
   if (op !== 'delete') {
@@ -42,7 +27,7 @@ function validateEdit(edit: any, op: string, index: number): void {
 }
 
 export default tool({
-  description: "Edit file using hash-anchored line references. CRITICAL: hashread MUST be called immediately before this tool - every edit changes cumulative hashes, so you must re-read before each edit. Use anchors from the most recent hashread output in format LINE#HASH (e.g., \"8#RT\"). After editing, hashes for ALL lines after the edit point change. Combine multiple edits in one call when possible.",
+  description: "Edit file using hash-anchored line references. CRITICAL: hashread MUST be called immediately before every hashedit. Use anchors from the most recent hashread output in format LINE#HASH (e.g., \"8#RT\"). After editing, hashes for ALL lines after the edit point change. Combine multiple edits in one call when possible.",
   args: {
     filePath: tool.schema.string().describe("The path to the file to edit"),
     replace: tool.schema.optional(tool.schema.array(
