@@ -326,3 +326,142 @@ fn test_cumulative_hash_invalidation_chain() {
     
     assert!(result4.is_ok(), "Edit at line 1 should succeed (before the changed line)");
 }
+
+#[test]
+fn test_overlapping_replace_and_prepend() {
+    // Replace at line N and Prepend at line N both target position N
+    let content = "line 1\nline 2\nline 3\n";
+    let edits = vec![
+        HashlineEdit::Replace {
+            pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
+            end: None,
+            lines: vec!["replaced".to_string()],
+        },
+        HashlineEdit::Prepend {
+            pos: Some(AnchorRef { line: 1, hash: get_line_hash(content, 1) }),
+            lines: vec!["prepended".to_string()],
+        }
+    ];
+    let result = apply_hashline_edits(content, &edits);
+    assert!(result.is_err(), "Replace and prepend at same line should overlap");
+}
+
+#[test]
+fn test_overlapping_append_and_prepend_same_line() {
+    // Append and Prepend at same line both reference line N - conceptual overlap
+    let content = "line 1\nline 2\nline 3\n";
+    let edits = vec![
+        HashlineEdit::Append {
+            pos: Some(AnchorRef { line: 2, hash: get_line_hash(content, 2) }),
+            lines: vec!["appended".to_string()],
+        },
+        HashlineEdit::Prepend {
+            pos: Some(AnchorRef { line: 2, hash: get_line_hash(content, 2) }),
+            lines: vec!["prepended".to_string()],
+        }
+    ];
+    let result = apply_hashline_edits(content, &edits);
+    assert!(result.is_err(), "Append and prepend at same line should overlap");
+}
+
+#[test]
+fn test_non_overlapping_replace_and_append() {
+    // Replace at line N and Append at line N don't actually overlap
+    // (replace affects position N, append affects N+1)
+    let content = "line 1\nline 2\nline 3\n";
+    let edits = vec![
+        HashlineEdit::Replace {
+            pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
+            end: None,
+            lines: vec!["replaced".to_string()],
+        },
+        HashlineEdit::Append {
+            pos: Some(AnchorRef { line: 1, hash: get_line_hash(content, 1) }),
+            lines: vec!["appended".to_string()],
+        }
+    ];
+    let (result, _) = apply_hashline_edits(content, &edits).unwrap();
+    assert!(result.contains("replaced"));
+    assert!(result.contains("appended"));
+}
+
+#[test]
+fn test_non_overlapping_replace_range_and_append() {
+    // Replace range 2-3 and Append at line 3 don't overlap
+    // (replace 2-3 -> [2,3], append at 3 -> [4,4])
+    let content = "line 1\nline 2\nline 3\nline 4\n";
+    let edits = vec![
+        HashlineEdit::Replace {
+            pos: AnchorRef { line: 2, hash: get_line_hash(content, 2) },
+            end: Some(AnchorRef { line: 3, hash: get_line_hash(content, 3) }),
+            lines: vec!["replaced".to_string()],
+        },
+        HashlineEdit::Append {
+            pos: Some(AnchorRef { line: 3, hash: get_line_hash(content, 3) }),
+            lines: vec!["appended".to_string()],
+        }
+    ];
+    // These don't overlap - append inserts at position 4, replace is at 2-3
+    let (result, _) = apply_hashline_edits(content, &edits).unwrap();
+    assert!(result.contains("replaced"));
+    assert!(result.contains("appended"));
+}
+
+#[test]
+fn test_overlapping_replace_range_with_prepend() {
+    // Replace range 2-4 and Prepend at line 2 overlap
+    let content = "line 1\nline 2\nline 3\nline 4\nline 5\n";
+    let edits = vec![
+        HashlineEdit::Replace {
+            pos: AnchorRef { line: 2, hash: get_line_hash(content, 2) },
+            end: Some(AnchorRef { line: 4, hash: get_line_hash(content, 4) }),
+            lines: vec!["replaced".to_string()],
+        },
+        HashlineEdit::Prepend {
+            pos: Some(AnchorRef { line: 2, hash: get_line_hash(content, 2) }),
+            lines: vec!["prepended".to_string()],
+        }
+    ];
+    let result = apply_hashline_edits(content, &edits);
+    assert!(result.is_err(), "Replace range 2-4 and prepend at line 2 should overlap");
+}
+
+#[test]
+fn test_non_overlapping_replace_different_lines() {
+    // Replace at line 1 and Append at line 3 don't overlap
+    let content = "line 1\nline 2\nline 3\n";
+    let edits = vec![
+        HashlineEdit::Replace {
+            pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
+            end: None,
+            lines: vec!["replaced 1".to_string()],
+        },
+        HashlineEdit::Append {
+            pos: Some(AnchorRef { line: 3, hash: get_line_hash(content, 3) }),
+            lines: vec!["appended".to_string()],
+        }
+    ];
+    let (result, _) = apply_hashline_edits(content, &edits).unwrap();
+    assert!(result.contains("replaced 1"));
+    assert!(result.contains("appended"));
+}
+
+#[test]
+fn test_non_overlapping_append_eof_with_replace() {
+    // Append at EOF and replace not at last line don't overlap
+    let content = "line 1\nline 2\nline 3\n";
+    let edits = vec![
+        HashlineEdit::Replace {
+            pos: AnchorRef { line: 1, hash: get_line_hash(content, 1) },
+            end: None,
+            lines: vec!["replaced".to_string()],
+        },
+        HashlineEdit::Append {
+            pos: None,
+            lines: vec!["appended".to_string()],
+        }
+    ];
+    let (result, _) = apply_hashline_edits(content, &edits).unwrap();
+    assert!(result.contains("replaced"));
+    assert!(result.contains("appended"));
+}

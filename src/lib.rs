@@ -289,40 +289,86 @@ pub fn apply_hashline_edits(
     // Deduplicate edits targeting same location with same content
     let edits = deduplicate_edits(edits, &file_lines);
     
-    // Check for overlapping replace regions
+    // Check for overlapping edits
     let mut overlapping: Vec<String> = Vec::new();
-    let replace_edits: Vec<_> = edits.iter().enumerate()
-        .filter(|(_, e)| matches!(e, HashlineEdit::Replace { .. }))
-        .collect();
-    for i in 0..replace_edits.len() {
-        let (_idx_a, edit_a) = replace_edits[i];
-        let (a_start, a_end) = match edit_a {
+    let file_len = file_lines.len();
+    
+    // Helper: get the line range affected by an edit
+    fn get_edit_range(edit: &HashlineEdit, file_len: usize) -> Option<(usize, usize)> {
+        match edit {
             HashlineEdit::Replace { pos, end, .. } => {
-                (pos.line, end.as_ref().map(|e| e.line).unwrap_or(pos.line))
+                let end_line = end.as_ref().map(|e| e.line).unwrap_or(pos.line);
+                Some((pos.line, end_line))
             }
-            _ => unreachable!(),
-        };
-        for j in (i + 1)..replace_edits.len() {
-            let (_idx_b, edit_b) = replace_edits[j];
-            let (b_start, b_end) = match edit_b {
-                HashlineEdit::Replace { pos, end, .. } => {
-                    (pos.line, end.as_ref().map(|e| e.line).unwrap_or(pos.line))
-                }
-                _ => unreachable!(),
-            };
-            // Check if regions overlap
-            if !(a_end < b_start || b_end < a_start) {
-                overlapping.push(format!("  - Edit at lines {}-{} overlaps with edit at lines {}-{}",
-                    a_start, a_end, b_start, b_end));
+            HashlineEdit::Append { pos, lines } => {
+                if lines.is_empty() { return None; }
+                let ref_line = pos.as_ref().map(|p| p.line).unwrap_or(file_len);
+                // Append inserts after ref_line, so range is [ref_line+1, ref_line+lines.len()]
+                Some((ref_line + 1, ref_line + lines.len()))
+            }
+            HashlineEdit::Prepend { pos, lines } => {
+                if lines.is_empty() { return None; }
+                let ref_line = pos.as_ref().map(|p| p.line).unwrap_or(1);
+                // Prepend inserts before ref_line, so range is [ref_line, ref_line+lines.len()-1]
+                Some((ref_line, ref_line + lines.len() - 1))
             }
         }
     }
+    
+    // Check if any two edits have overlapping ranges
+    for i in 0..edits.len() {
+        let range_i = match get_edit_range(&edits[i], file_len) {
+            Some(r) => r,
+            None => continue,
+        };
+        for j in (i + 1)..edits.len() {
+            let range_j = match get_edit_range(&edits[j], file_len) {
+                Some(r) => r,
+                None => continue,
+            };
+            
+            // Check if ranges overlap (intervals intersect)
+            let intervals_overlap = !(range_i.1 < range_j.0 || range_j.1 < range_i.0);
+            
+            
+            // Special case: Append and Prepend at same ref line are conceptually at the same position
+            // even if their intervals don't overlap (prepend inserts before, append inserts after)
+            let same_ref_line = match (&edits[i], &edits[j]) {
+                (HashlineEdit::Append { pos: pos_a, .. }, HashlineEdit::Prepend { pos: pos_b, .. }) |
+                (HashlineEdit::Prepend { pos: pos_a, .. }, HashlineEdit::Append { pos: pos_b, .. }) => {
+                    let ref_a = pos_a.as_ref().map(|p| p.line).unwrap_or(file_len);
+                    let ref_b = pos_b.as_ref().map(|p| p.line).unwrap_or(1);
+                    ref_a == ref_b && pos_a.is_some() && pos_b.is_some()
+                }
+                _ => false,
+            };
+            
+            if intervals_overlap || same_ref_line {
+                let op_i = match &edits[i] {
+                    HashlineEdit::Replace { .. } => "replace",
+                    HashlineEdit::Append { .. } => "append",
+                    HashlineEdit::Prepend { .. } => "prepend",
+                };
+                let op_j = match &edits[j] {
+                    HashlineEdit::Replace { .. } => "replace",
+                    HashlineEdit::Append { .. } => "append",
+                    HashlineEdit::Prepend { .. } => "prepend",
+                };
+                overlapping.push(format!(
+                    "  - {} at lines {}-{} overlaps with {} at lines {}-{}",
+                    op_i, range_i.0, range_i.1, op_j, range_j.0, range_j.1
+                ));
+            }
+        }
+    }
+    
     if !overlapping.is_empty() {
         return Err(format!(
             "Overlapping edits detected. Combine overlapping edits into a single operation:\n{}",
             overlapping.join("\n")
         ).into());
     }
+    
     
     // Sort edits bottom-up (highest line first)
     let mut annotated: Vec<(usize, usize, HashlineEdit)> = edits.into_iter()
