@@ -4,24 +4,80 @@ import { $ } from "bun";
 type HashAnchor = string;
 type PosAnchor = HashAnchor | "EOF" | "BOF";
 
-function validateHashAnchor(value: string, field: string): void {
-  if (value === "EOF" || value === "BOF") return;
-  if (!/^\d+#[A-Za-z0-9]+$/.test(value)) {
+/**
+ * Validate an anchor value and return a helpful error message.
+ * This is the single source of truth for anchor validation.
+ */
+function validateAnchor(
+  value: unknown,
+  field: string,
+  options: {
+    allowEof?: boolean;
+    allowBof?: boolean;
+    requireHashread?: boolean;
+  } = {}
+): string {
+  const { allowEof = false, allowBof = false, requireHashread = true } = options;
+
+  // Check type first
+  if (typeof value !== "string") {
     throw new Error(
-      `${field}: must be "LINE#HASH" (e.g. "8#RT"), "EOF", or "BOF" - got: ${JSON.stringify(value)}`
+      `${field}: must be a string LINE#HASH (e.g., "8#RT"), "EOF", or "BOF" - ` +
+        `got: ${JSON.stringify(value)} (${typeof value}). ` +
+        `Hint: Make sure you call hashread first to get valid LINE#HASH anchors.`
     );
   }
+
+  // Check for special values
+  if (value === "EOF") {
+    if (!allowEof) {
+      throw new Error(
+        `${field}: "EOF" is not allowed here. Use "append" with "EOF" to append at end of file.`
+      );
+    }
+    return value;
+  }
+
+  if (value === "BOF") {
+    if (!allowBof) {
+      throw new Error(
+        `${field}: "BOF" is not allowed here. Use "prepend" with "BOF" to prepend at start of file.`
+      );
+    }
+    return value;
+  }
+
+  // Check format
+  if (!/^\d+#[A-Za-z0-9]+$/.test(value)) {
+    // Common mistake: passing just a number
+    if (/^\d+$/.test(value)) {
+      throw new Error(
+        `${field}: got "${value}" which looks like a line number without a hash. ` +
+          `You must use LINE#HASH format (e.g., "${value}#AB") from hashread output. ` +
+          `Did you call hashread first to get valid anchors?`
+      );
+    }
+
+    throw new Error(
+      `${field}: must be LINE#HASH format (e.g., "8#RT"), "EOF", or "BOF" - ` +
+        `got: ${JSON.stringify(value)}. ` +
+        (requireHashread ? `Hint: Call hashread first to get valid LINE#HASH anchors.` : "")
+    );
+  }
+
+  return value;
 }
 
-function validateLines(lines: any, field: string): void {
+function validateLines(lines: unknown, field: string): string[] {
   if (!Array.isArray(lines)) {
     throw new Error(`${field}: must be an array of strings`);
   }
-  lines.forEach((line: any, i: number) => {
+  lines.forEach((line: unknown, i: number) => {
     if (typeof line !== "string") {
-      throw new Error(`${field}[${i}]: must be a string`);
+      throw new Error(`${field}[${i}]: must be a string, got: ${typeof line}`);
     }
   });
+  return lines as string[];
 }
 
 type ReplaceOp = { op: "replace"; pos: HashAnchor; end?: HashAnchor; lines: string[] };
@@ -30,61 +86,62 @@ type PrependOp = { op: "prepend"; pos: PosAnchor; lines: string[] };
 type DeleteOp  = { op: "delete";  pos: HashAnchor; end?: HashAnchor };
 type WriteOp   = { op: "write";   content: string };
 type EditOp    = ReplaceOp | AppendOp | PrependOp | DeleteOp | WriteOp;
+type InternalOp = {
+  op: "replace" | "append" | "prepend";
+  pos?: string;
+  end?: string;
+  lines: string[];
+};
 
-function validateOp(raw: any, index: number): EditOp {
+function validateOp(raw: unknown, index: number): EditOp {
   const ctx = `edits[${index}]`;
   if (!raw || typeof raw !== "object") throw new Error(`${ctx}: must be an object`);
-  const { op } = raw;
-  if (!op) throw new Error(`${ctx}: missing required field "op"`);
+  
+  const rawObj = raw as Record<string, unknown>;
+  const { op } = rawObj;
+  
+  if (!op || typeof op !== "string") {
+    throw new Error(`${ctx}: missing required field "op" - must be one of: replace, append, prepend, delete, write`);
+  }
 
   switch (op) {
     case "write": {
-      if (typeof raw.content !== "string") throw new Error(`${ctx}: "content" must be a string`);
-      return { op: "write", content: raw.content };
+      if (typeof rawObj.content !== "string") throw new Error(`${ctx}.content: must be a string`);
+      return { op: "write", content: rawObj.content };
     }
     case "replace": {
-      if (typeof raw.pos !== "string") throw new Error(`${ctx}: "pos" must be a LINE#HASH string`);
-      validateHashAnchor(raw.pos, `${ctx}.pos`);
-      if (raw.pos === "EOF" || raw.pos === "BOF") throw new Error(`${ctx}: "pos" cannot be "EOF" or "BOF"`);
-      if (raw.end !== undefined) {
-        if (typeof raw.end !== "string") throw new Error(`${ctx}: "end" must be a LINE#HASH string`);
-        validateHashAnchor(raw.end, `${ctx}.end`);
-        if (raw.end === "EOF" || raw.end === "BOF") throw new Error(`${ctx}: "end" cannot be "EOF" or "BOF"`);
+      const pos = validateAnchor(rawObj.pos, `${ctx}.pos`, { allowEof: false, allowBof: false });
+      let end: string | undefined;
+      if (rawObj.end !== undefined) {
+        end = validateAnchor(rawObj.end, `${ctx}.end`, { allowEof: false, allowBof: false });
       }
-      validateLines(raw.lines, `${ctx}.lines`);
-      return { op: "replace", pos: raw.pos, end: raw.end, lines: raw.lines };
+      const lines = validateLines(rawObj.lines, `${ctx}.lines`);
+      return { op: "replace", pos, end, lines };
     }
     case "append": {
-      if (typeof raw.pos !== "string") throw new Error(`${ctx}: "pos" must be a LINE#HASH string or "EOF"`);
-      validateHashAnchor(raw.pos, `${ctx}.pos`);
-      if (raw.pos === "BOF") throw new Error(`${ctx}: "pos" cannot be "BOF" - use "prepend" with "BOF" instead`);
-      validateLines(raw.lines, `${ctx}.lines`);
-      return { op: "append", pos: raw.pos, lines: raw.lines };
+      const pos = validateAnchor(rawObj.pos, `${ctx}.pos`, { allowEof: true, allowBof: false });
+      const lines = validateLines(rawObj.lines, `${ctx}.lines`);
+      return { op: "append", pos, lines };
     }
     case "prepend": {
-      if (typeof raw.pos !== "string") throw new Error(`${ctx}: "pos" must be a LINE#HASH string or "BOF"`);
-      validateHashAnchor(raw.pos, `${ctx}.pos`);
-      if (raw.pos === "EOF") throw new Error(`${ctx}: "pos" cannot be "EOF" - use "append" with "EOF" instead`);
-      validateLines(raw.lines, `${ctx}.lines`);
-      return { op: "prepend", pos: raw.pos, lines: raw.lines };
+      const pos = validateAnchor(rawObj.pos, `${ctx}.pos`, { allowEof: false, allowBof: true });
+      const lines = validateLines(rawObj.lines, `${ctx}.lines`);
+      return { op: "prepend", pos, lines };
     }
     case "delete": {
-      if (typeof raw.pos !== "string") throw new Error(`${ctx}: "pos" must be a LINE#HASH string`);
-      validateHashAnchor(raw.pos, `${ctx}.pos`);
-      if (raw.pos === "EOF" || raw.pos === "BOF") throw new Error(`${ctx}: "pos" cannot be "EOF" or "BOF"`);
-      if (raw.end !== undefined) {
-        if (typeof raw.end !== "string") throw new Error(`${ctx}: "end" must be a LINE#HASH string`);
-        validateHashAnchor(raw.end, `${ctx}.end`);
-        if (raw.end === "EOF" || raw.end === "BOF") throw new Error(`${ctx}: "end" cannot be "EOF" or "BOF"`);
+      const pos = validateAnchor(rawObj.pos, `${ctx}.pos`, { allowEof: false, allowBof: false });
+      let end: string | undefined;
+      if (rawObj.end !== undefined) {
+        end = validateAnchor(rawObj.end, `${ctx}.end`, { allowEof: false, allowBof: false });
       }
-      return { op: "delete", pos: raw.pos, end: raw.end };
+      return { op: "delete", pos, end };
     }
     default:
       throw new Error(`${ctx}.op: unknown operation "${op}" - must be one of: replace, append, prepend, delete, write`);
   }
 }
 
-function toInternalOp(edit: Exclude<EditOp, WriteOp>): object {
+function toInternalOp(edit: Exclude<EditOp, WriteOp>): InternalOp {
   switch (edit.op) {
     case "replace":
       return { op: "replace", pos: edit.pos, ...(edit.end ? { end: edit.end } : {}), lines: edit.lines };
@@ -129,10 +186,10 @@ Rules:
           .describe('"replace" | "append" | "prepend" | "delete" | "write"'),
         pos: tool.schema
           .optional(tool.schema.string())
-          .describe('LINE#HASH anchor (e.g. "8#RT"). "append" also accepts "EOF"; "prepend" also accepts "BOF". Required for all ops except "write".'),
+          .describe('LINE#HASH anchor from hashread output (e.g., "8#RT"). "append" also accepts "EOF"; "prepend" also accepts "BOF". Required for all ops except "write". NOTE: You MUST call hashread first to get valid LINE#HASH anchors.'),
         end: tool.schema
           .optional(tool.schema.string())
-          .describe('End anchor LINE#HASH for range "replace" or "delete".'),
+          .describe('End anchor LINE#HASH for range "replace" or "delete". Must also come from hashread output.'),
         lines: tool.schema
           .optional(tool.schema.array(tool.schema.string()))
           .describe('Lines to insert or replace. Required for "replace", "append", "prepend".'),
@@ -140,7 +197,7 @@ Rules:
           .optional(tool.schema.string())
           .describe('Full file content. Required for "write" only.'),
       })
-    ).describe("One or more edit operations. Multiple ops are applied bottom-to-top automatically."),
+    ).describe("One or more edit operations. Multiple ops are applied bottom-to-top automatically. You MUST call hashread first to get valid LINE#HASH anchors before using hashedit."),
   },
 
   async execute(args, context) {
